@@ -5,6 +5,11 @@ export async function signInWithGoogle() {
     provider: 'google',
     options: {
       redirectTo: `${window.location.origin}/auth/callback`,
+      // Without this, Google often silently reuses the browser's last Google
+      // session instead of showing the account chooser — which breaks the
+      // "sign out, sign in with the other account" step of linking a second
+      // account (see AccountSettings.jsx).
+      queryParams: { prompt: 'select_account' },
     },
   })
   if (error) throw error

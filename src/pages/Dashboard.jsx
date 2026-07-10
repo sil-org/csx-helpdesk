@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { signOut } from '../lib/auth'
 import { supabase } from '../lib/supabase'
@@ -22,9 +23,14 @@ export default function Dashboard() {
       <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg p-10">
         <div className="flex items-center justify-between mb-2">
           <h1 className="font-display text-2xl font-bold text-brand">Dashboard</h1>
-          <button onClick={signOut} className="text-sm font-medium text-gray-500 hover:text-gray-700">
-            Sign out
-          </button>
+          <div className="flex items-center gap-4">
+            <Link to="/account" className="text-sm font-medium text-gray-500 hover:text-gray-700">
+              Account
+            </Link>
+            <button onClick={signOut} className="text-sm font-medium text-gray-500 hover:text-gray-700">
+              Sign out
+            </button>
+          </div>
         </div>
         <p className="text-gray-500 mb-6">Signed in as {profile?.display_name} ({profile?.primary_email})</p>
 
