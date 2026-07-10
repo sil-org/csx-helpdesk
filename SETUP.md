@@ -161,3 +161,58 @@ The RAG corpus is internal SIL ticket content, so before setting
    as secrets for the `embed-document` function (`supabase secrets set`)
 
 The function refuses to call Voyage AI until that flag is `true`.
+
+---
+
+## 9. Pilot email ingestion (temporary — BTC alias, not sil.org)
+
+sil.org MX record access isn't available yet, so ticket intake is piloted on
+`helpdesk-test@btconference.org`, an alias on the existing `info@btconference.org`
+Google Workspace mailbox, instead of a real department address. **Swap this
+out for a real `sil.org` alias once DNS access comes through** — don't leave
+production ticket intake on a conference domain.
+
+### Add the alias and an isolating filter
+
+Because the Gmail API OAuth grant below covers the *entire* `info@` mailbox
+(there's no way to scope it to just the alias), a Gmail filter + label is
+what actually keeps this pilot from touching real BTC conference mail — the
+ingestion function only ever reads messages carrying the label.
+
+1. **Google Workspace Admin console** (needs admin rights on the Workspace,
+   not just a regular user on `info@`): add `helpdesk-test@btconference.org`
+   as an alias on the `info@btconference.org` account
+2. **Gmail (as info@btconference.org) > Settings > Labels**: create a label
+   `HelpdeskPilot`
+3. **Settings > Filters and Blocked Addresses > Create a new filter**:
+   - To: `helpdesk-test@btconference.org`
+   - Create filter → Apply the label `HelpdeskPilot` (optionally also
+     "Skip the Inbox" so pilot mail doesn't clutter the real inbox)
+
+### Get a Gmail API refresh token (3-legged OAuth, not domain-wide delegation)
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → the same
+   `helpdesk` project (or a new one) → **APIs & Services > Library** → enable
+   the **Gmail API**
+2. **APIs & Services > Credentials > Create Credentials > OAuth client ID**
+   → Application type **Desktop app** (simplest for a one-time manual consent)
+   → copy the Client ID and Client Secret
+3. Use [Google OAuth Playground](https://developers.google.com/oauthplayground):
+   - Gear icon → check "Use your own OAuth credentials" → paste the Client ID/Secret
+   - Step 1: select scope `https://www.googleapis.com/auth/gmail.modify` → Authorize
+     → **sign in as info@btconference.org** when prompted
+   - Step 2: Exchange authorization code for tokens → copy the **refresh token**
+     (this doesn't expire unless revoked — treat it like a password)
+
+### Wire it up
+
+1. Run `supabase/seed_pilot_desk.sql` in the SQL Editor (creates the `pilot` desk)
+2. Set secrets: `supabase secrets set GMAIL_CLIENT_ID=... GMAIL_CLIENT_SECRET=... GMAIL_REFRESH_TOKEN=...`
+3. Deploy: `supabase functions deploy ingest-email --no-verify-jwt`
+4. Test by emailing `helpdesk-test@btconference.org`, then manually invoke the
+   function (`curl -X POST https://your-project-id.supabase.co/functions/v1/ingest-email`)
+   and confirm a row shows up in `tickets`
+
+**Not done yet:** this only runs when invoked manually. Real polling needs a
+recurring trigger (`pg_cron` calling the function on a schedule, or an
+external scheduler) — add that once the pilot itself is confirmed working.

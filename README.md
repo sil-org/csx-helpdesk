@@ -12,11 +12,17 @@ React + Vite + Tailwind, Supabase (Postgres/Auth), Gmail API per-mailbox OAuth f
 
 Repo scaffold only. Built so far:
 - Vite/React app shell (from `sil-app-template`): Google OAuth restricted to `sil.org` (enforced in `resolve_profile()`, not just client-side), `profiles`/`linked_accounts` identity model, role-based route guards, SIL branding
-- Draft Supabase schema split in two: `supabase/schema.sql` is the template's auth kernel unmodified (except the sil.org check is enabled); `supabase/schema_helpdesk.sql` adds the help-desk entities from brief Section 3 — `desks`, `desk_settings`, `agent_desks`, `requesters`, `tickets`, `ticket_messages`, `ticket_events`, `ticket_links`, `corpus_documents` — all referencing `profiles(id)`, not `auth.users`
+- Draft Supabase schema split in two: `supabase/schema.sql` is the template's auth kernel unmodified (except the sil.org check is enabled, scoped to new-profile creation only — see account linking below); `supabase/schema_helpdesk.sql` adds the help-desk entities from brief Section 3 — `desks`, `desk_settings`, `agent_desks`, `requesters`, `tickets`, `ticket_messages`, `ticket_events`, `ticket_links`, `corpus_documents` — all referencing `profiles(id)`, not `auth.users`
+- `/account` page for staff to link a personal Google account (e.g. a personal Gmail) as backup sign-in access, in case they ever lose access to their SIL email
 - Stub `embed-document` edge function (`supabase/functions/embed-document/`) that embeds a corpus document via Voyage AI — gated on `VOYAGE_TRAINING_OPT_OUT_CONFIRMED` (see below)
-- `.github/workflows/deploy.yml` — builds + deploys the frontend to S3/CloudFront and the edge function to Supabase on push to `main`
+- Pilot `ingest-email` edge function (`supabase/functions/ingest-email/`) that turns inbound mail into tickets — see the BTC-alias pilot note below
+- `.github/workflows/deploy.yml` — builds + deploys the frontend to S3/CloudFront and edge functions to Supabase on push to `main`
 
-Not started: Gmail ingestion, ticket UI beyond the placeholder, RAG retrieval, AWS-ticket automation logging, migration tooling. Per the brief's own recommendation, hold off on AWS-ticket integration and migration tooling until desk participation is confirmed.
+Not started: ticket UI beyond the placeholder, RAG retrieval, AWS-ticket automation logging, migration tooling, a recurring trigger for `ingest-email` (it currently only runs when invoked manually). Per the brief's own recommendation, hold off on AWS-ticket integration and migration tooling until desk participation is confirmed.
+
+### Email intake is piloted on a BTC alias, not sil.org — temporary
+
+sil.org MX record access isn't available yet, so `ingest-email` polls `helpdesk-test@btconference.org` (an alias on the existing `info@btconference.org` Google Workspace mailbox) instead of a real department address, isolated via a Gmail filter + label so it can't touch real BTC conference mail. **This needs to move to a real sil.org alias once DNS access is sorted** — see `SETUP.md` step 9 for the full setup and the reasoning behind the label-based isolation.
 
 ### Voyage AI data-training opt-out — required before embedding real ticket content
 
