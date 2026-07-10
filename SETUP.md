@@ -278,18 +278,32 @@ ingestion function only ever reads messages carrying the label.
 
 ### Get a Gmail API refresh token (3-legged OAuth, not domain-wide delegation)
 
+This is a separate OAuth client from the one used for staff sign-in — don't
+reuse that one, it has different redirect URIs and scopes.
+
 1. [console.cloud.google.com](https://console.cloud.google.com) → the same
    `helpdesk` project (or a new one) → **APIs & Services > Library** → enable
    the **Gmail API**
 2. **APIs & Services > Credentials > Create Credentials > OAuth client ID**
-   → Application type **Desktop app** (simplest for a one-time manual consent)
-   → copy the Client ID and Client Secret
+   → Application type **Web application** (not Desktop app — Desktop app
+   clients can't set a redirect URI, and OAuth Playground needs one)
+   → name it something like "Gmail ingestion (OAuth Playground)"
+   → under **Authorized redirect URIs**, add exactly
+   `https://developers.google.com/oauthplayground`
+   → Create → copy the **Client ID** and **Client Secret**
 3. Use [Google OAuth Playground](https://developers.google.com/oauthplayground):
-   - Gear icon → check "Use your own OAuth credentials" → paste the Client ID/Secret
-   - Step 1: select scope `https://www.googleapis.com/auth/gmail.modify` → Authorize
-     → **sign in as info@btconference.org** when prompted
-   - Step 2: Exchange authorization code for tokens → copy the **refresh token**
-     (this doesn't expire unless revoked — treat it like a password)
+   - Gear icon (top right) → check **"Use your own OAuth credentials"** →
+     paste the Client ID/Secret
+   - Same settings panel: set **Access type** to **Offline** and
+     **Force prompt** to **Consent Screen** — both are required or Google
+     won't return a refresh token
+   - Step 1: find **Gmail API v1**, check scope
+     `https://www.googleapis.com/auth/gmail.modify` → **Authorize APIs**
+     → **sign in as info@btconference.org** when prompted (not your personal
+     or SIL account — it has to be that mailbox's account)
+   - Step 2: **Exchange authorization code for tokens** → copy the
+     **refresh token** from the response (this doesn't expire unless
+     revoked — treat it like a password)
 
 ### Wire it up
 
