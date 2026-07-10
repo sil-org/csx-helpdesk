@@ -6,20 +6,107 @@ Replace `YOUR_DOMAIN` below with the subdomain you'll host this at (e.g. `helpde
 
 ---
 
-## 1. Create a Supabase project
+## 1. Use the shared Supabase project (same one as license-manager)
+
+This app shares a Supabase project with `license-manager` rather than having
+its own — both are `sil-app-template` apps for the same population of SIL
+staff, so one project means one Google OAuth setup and one sign-in (via the
+shared `profiles`/`linked_accounts` tables) instead of two. Their domain
+tables don't collide (`desks`/`tickets`/... vs `suite_keys`/`licenses`/...),
+so this is safe.
+
+**If the shared project already exists** (license-manager's Supabase project
+is already provisioned):
+
+1. Get its **Project URL** and **anon public** key from
+   **Project Settings > API** — reuse them for `VITE_SUPABASE_URL` /
+   `VITE_SUPABASE_ANON_KEY` here, don't create a new project
+2. **Check whether `resolve_profile()` already enforces the sil.org domain
+   check** (open the function in SQL Editor, or check `license-manager`'s
+   `supabase/schema.sql`). If not, run the "enable domain check" snippet in
+   step 1a below — this app requires it, and since the function is shared,
+   it needs to be enabled once for both apps.
+3. **SQL Editor > New query**, paste `supabase/schema_helpdesk.sql`, run it.
+   **Do not re-run `schema.sql`** — it's already been applied by
+   license-manager's setup, and re-running it will error on
+   `policy already exists` (the table/function statements are idempotent,
+   but the `create policy` statements aren't).
+4. Run `supabase/seed_pilot_desk.sql`
+
+**If the shared project doesn't exist yet** (starting fresh, license-manager
+hasn't been set up either):
 
 1. Go to [supabase.com](https://supabase.com) and sign in
-2. **New project** → Name: `helpdesk` → pick a region
+2. **New project** → name it something that reflects both apps (e.g.
+   `sil-internal-tools`), not just one — pick a region
 3. Wait for it to provision
 4. **Project Settings > API** → copy **Project URL** (`VITE_SUPABASE_URL`) and
    **anon public** key (`VITE_SUPABASE_ANON_KEY`)
+5. **SQL Editor > New query**, paste `supabase/schema.sql` (the sil-app-template
+   auth kernel — profiles, linked accounts, RLS, with the sil.org check
+   already enabled in this copy), run it — **once, for both apps**
+6. New query, paste `supabase/schema_helpdesk.sql`, run it
+7. Also run `license-manager`'s `supabase/schema_licenses.sql` against this
+   same project (see that repo's `SETUP.md`)
+8. Run `supabase/seed_pilot_desk.sql`
 
-### Run the database schema
+### 1a. Enable the sil.org domain check (only if it isn't already)
 
-1. **SQL Editor > New query**, paste the contents of `supabase/schema.sql` (the
-   sil-app-template auth kernel — profiles, linked accounts, RLS), run it
-2. New query, paste `supabase/schema_helpdesk.sql` (desks, tickets, messages,
-   corpus — see Section 3 of `docs/HELPDESK_PROJECT_BRIEF.md`), run it
+Safe to run any time — `create or replace function` doesn't error if the
+function already exists, so this works whether or not the check is
+currently enabled:
+
+```sql
+create or replace function resolve_profile(
+  p_token uuid,
+  p_supabase_user_id uuid,
+  p_email text,
+  p_display_name text
+)
+returns uuid language plpgsql security definer as $$
+declare
+  v_profile_id uuid;
+begin
+  -- case 1: already linked
+  select profile_id into v_profile_id
+  from linked_accounts where supabase_user_id = p_supabase_user_id;
+  if v_profile_id is not null then
+    return v_profile_id;
+  end if;
+
+  -- case 2: valid link token supplied — links this account to an existing
+  -- profile regardless of email domain. The token is the security check
+  -- here, not the domain — see schema.sql for why that's safe.
+  if p_token is not null then
+    select profile_id into v_profile_id
+    from profile_link_tokens
+    where token = p_token and used_at is null and expires_at > now();
+
+    if v_profile_id is not null then
+      insert into linked_accounts (supabase_user_id, profile_id, email)
+      values (p_supabase_user_id, v_profile_id, p_email);
+      update profile_link_tokens set used_at = now() where token = p_token;
+      return v_profile_id;
+    end if;
+  end if;
+
+  -- case 3: brand new person — the only path that creates a profile, so the
+  -- only path that needs the sil.org check.
+  if p_email not like '%@sil.org' then
+    raise exception 'Access restricted to SIL staff (sil.org accounts).';
+  end if;
+
+  insert into profiles (display_name, primary_email)
+  values (p_display_name, p_email)
+  returning id into v_profile_id;
+
+  insert into linked_accounts (supabase_user_id, profile_id, email)
+  values (p_supabase_user_id, v_profile_id, p_email);
+
+  return v_profile_id;
+end;
+$$;
+```
 
 ---
 

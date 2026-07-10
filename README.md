@@ -4,6 +4,8 @@ Unified help desk & ticketing platform for SIL departments (Dallas, Africa, Glob
 
 Built on [`sil-app-template`](https://github.com/kode-monki/sil-app-template) — the shared identity model, RLS conventions, SIL branding, and S3/CloudFront deploy pipeline all come from there. App-specific tables and pages are additions on top.
 
+**Shares its Supabase project with [`license-manager`](https://github.com/kode-monki/license-manager)** rather than having its own — same `sil-app-template` auth kernel, same population of SIL staff, no table-name collisions between the two apps' domain schemas. One Google OAuth setup and one sign-in covers both. See `SETUP.md` step 1.
+
 ## Stack
 
 React + Vite + Tailwind, Supabase (Postgres/Auth), Gmail API per-mailbox OAuth for inbound/outbound email, Voyage AI embeddings + `pgvector` for RAG, Claude API for draft generation. Deployed to AWS S3/CloudFront via GitHub Actions.
@@ -37,7 +39,7 @@ cp .env.example .env
 npm run dev
 ```
 
-Run `supabase/schema.sql` then `supabase/schema_helpdesk.sql` against a fresh Supabase project (SQL Editor, or `supabase db push` once linked) before signing in — the app calls a `resolve_profile` RPC defined in the first file. Full walkthrough in `SETUP.md`.
+Point `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` at the same Supabase project as `license-manager` (don't create a separate one), then run `supabase/schema_helpdesk.sql` and `supabase/seed_pilot_desk.sql` against it — `schema.sql` (the auth kernel) only needs to be applied once for both apps combined. Full walkthrough, including what to do if the shared project doesn't exist yet, in `SETUP.md`.
 
 ## Before this goes further
 
