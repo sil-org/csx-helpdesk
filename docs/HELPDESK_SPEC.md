@@ -20,7 +20,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 10 | CCs get email only; no app access. |
 | 11 | Ingestion: service account with domain-wide delegation reading one dedicated ingest mailbox. Parallel run with YouTrack first; alias cutover per desk later. |
 | 12 | Each desk can have several addresses, and optionally its own mailbox. |
-| 13 | AI drafts are generated automatically on every new ticket (cached), draft-only in v1. |
+| 13 | AI drafts are generated automatically on every new ticket and on every new requester reply (cached), draft-only in v1. |
 | 14 | Shared RAG corpus across all desks; each desk may opt out of contributing. |
 | 15 | Default theme is SIL brand (SIL Blue `#005CB9`). Playfair for titles, Source Sans 3 for UI. Per-desk logo and optional color override. |
 
@@ -136,6 +136,13 @@ Behaviour by confidence:
 ## 11. AI draft responses
 
 **Pipeline.** On creation of each new ticket: embed the text, retrieve the top matches from the shared corpus (resolved tickets and documentation), and call Claude to produce a draft in the ticket's detected language. The draft is stored and cached; it appears in the compose box labeled as an AI draft. Nothing auto-sends in v1.
+
+**Replies from the requester.** The same pipeline runs on every new inbound message from the requester, not only the first.
+- Context is the full public thread plus fresh corpus retrieval for the latest message. Internal notes are not given to the model for requester-facing drafts, so they cannot leak into a reply.
+- A new inbound message replaces any unsent draft for that ticket (older drafts are kept in history so an agent can recover one).
+- Not every reply gets a draft. Detect and skip auto-replies (see loop protection), and for short acknowledgements such as "thanks, that worked" suggest **Resolve** to the agent instead of drafting.
+- If the reply answers a question the agent asked, the draft moves the ticket forward (next step or resolution); if it adds new problems, the draft says what is being done about each.
+- Cost control: one draft per inbound message at most, retrieval and model calls skipped for skipped messages, and per-desk monthly spend visible to admins.
 
 **Features.**
 - Cited sources on every draft (ticket or doc, with the originating desk) and a confidence label; thumbs up/down per draft; edit-distance tracking between draft and sent reply.
