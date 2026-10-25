@@ -23,6 +23,8 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 13 | AI drafts are generated automatically on every new ticket and on every new requester reply (cached), draft-only in v1. |
 | 14 | Shared RAG corpus across all desks; each desk may opt out of contributing. |
 | 15 | Default theme is SIL brand (SIL Blue `#005CB9`). Playfair for titles, Source Sans 3 for UI. Per-desk logo and optional color override. |
+| 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
+| 17 | Deleted tickets are purged after a configurable retention period, default 60 days. |
 
 ## 2. Architecture
 
@@ -62,12 +64,13 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `ticket_participants(ticket_id, email, type)`: CCs and agent followers.
 - `ticket_messages`: keep `internal`; add attachment references.
 - `ticket_events`: used for every reassignment, transfer, reporter change, promotion and reopen.
-- `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar.
+- `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
+- Global settings (super admin): default `deleted_retention_days` = 60.
 - `corpus_documents`: add redaction flag; exclusions for internal notes and sensitive tickets.
 
 ## 5. Statuses
 
-New (default) -> Open (first agent action: reply, assign or status change) -> Waiting for response (agent asked a question) -> Open (reporter replies) -> Resolved -> Closed. Paused (until date Z) freezes the SLA clock and auto-resumes to Open. Deleted is a soft delete with an audit event and a later purge window (retention period to be set).
+New (default) -> Open (first agent action: reply, assign or status change) -> Waiting for response (agent asked a question) -> Open (reporter replies) -> Resolved -> Closed. Paused (until date Z) freezes the SLA clock and auto-resumes to Open. Deleted is a soft delete with an audit event. A daily job permanently removes tickets `deleted_retention_days` after deletion (global default 60, per-desk override), together with their attachments and any corpus documents made from them. Closed and Resolved tickets are not purged by this job.
 
 - Reporters see Paused as "On hold" with no date, and never see Deleted.
 - Closing by forwarding outside records `forwarded_to` so reports don't count it as a resolution.
@@ -121,7 +124,7 @@ Behaviour by confidence:
 
 ## 9. Desk transfers and external forwards
 
-- **Transfer:** agent picks a desk that accepts transfers. `current_desk_id` changes, status resets to New, assignee clears, history stays. The sending desk keeps read-only access. Reporter notification on transfer: to be decided.
+- **Transfer:** agent picks a desk that accepts transfers. `current_desk_id` changes, status resets to New, assignee clears, history stays. The sending desk keeps read-only access. The reporter is emailed that the ticket moved and which desk now has it, from the new desk's address so replies go to the right place.
 - **Forward outside:** agent forwards the thread to an external address; the ticket closes with a "forwarded to" note. A reply reopens it.
 - Every transfer and forward writes `ticket_events`.
 
@@ -167,7 +170,7 @@ Behaviour by confidence:
 
 **Soon after:** collision warning when two agents reply at once, @mentions, auto-assign or round-robin, SLA timers and per-desk reports (with business hours and holidays), out-of-hours auto-reply, one-click satisfaction rating on resolve, tags and categories, bulk actions, CSV export, nudge and auto-close, YouTrack history import into the corpus.
 
-**Policy decisions still open:** retention period before purging Deleted tickets, handling of a data-erasure request.
+**Policy decisions still open:** handling of a data-erasure request.
 
 ## 13. Suggested build order
 
@@ -187,6 +190,5 @@ Behaviour by confidence:
 - Domain-wide delegation scope: a leaked key could read any mailbox for the granted scopes. Mitigate with secrets-only storage, minimal scopes, admin review.
 - Groups: Reply-To rewriting, footers and send-as-group need to be verified on one real group.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
-- Reporter notification on transfer: not decided.
-- Retention and erasure policy: not decided.
+- Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
 - Strategic questions in the brief Section 10 (why now, ROI, why earlier combine attempts failed) remain unanswered; none of the above depends on them.
