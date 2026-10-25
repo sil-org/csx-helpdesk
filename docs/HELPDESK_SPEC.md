@@ -26,7 +26,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
 | 17 | Deleted tickets are purged, and all ticket attachments and media are removed, after a configurable retention period, default 60 days. |
 | 18 | The parallel run with YouTrack is per address: lesser-used addresses move from their Google Group to an alias on the ingest mailbox and run live in the app (replies enabled); busy addresses stay on their groups and YouTrack until cutover. |
-| 19 | The corpus improves through a review queue: an on-resolve proposal per ticket and a nightly digest across tickets; a desk admin approves everything before it joins the corpus. |
+| 19 | The Google Doc knowledge base is the corpus and stays the single source of truth. A one-click rating on resolve (Covered / Wrong or out of date / Missing) and a nightly digest produce proposals, deduplicated so repeated issues don't each create an entry. A desk admin approves each proposal, and only then does the app edit the Doc. |
 
 ## 2. Architecture
 
@@ -69,13 +69,9 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
 - `desk_settings`: also `attachment_retention_days` (nullable; null uses the global default) (`live_replies` lives on `desk_addresses`, not here).
 - Global settings (super admin): default `deleted_retention_days` = 60 and default `attachment_retention_days` = 60.
-- `corpus_documents`: add redaction flag; exclusions for internal notes and sensitive tickets; `approved_by`, `approved_at`, version history.
-- `corpus_proposals(id, desk_id, kind, target_document_id, proposed_text, source_ticket_ids, origin, status, proposed_by, reviewed_by, reviewed_at)`: `kind` is new, amend or flag; `origin` is on_resolve or nightly_digest; `status` is pending, approved or rejected.
-
-## 5. Statuses
-
-New (default) -> Open (first agent action: reply, assign or status change) -> Waiting for response (agent asked a question) -> Open (reporter replies) -> Resolved -> Closed. Paused (until date Z) freezes the SLA clock and auto-resumes to Open. Deleted is a soft delete with an audit event. A daily job permanently removes tickets `deleted_retention_days` after deletion (global default 60, per-desk override), together with their attachments and any corpus documents made from them. Attachments and media on every ticket are removed `attachment_retention_days` after the ticket is Closed (or after deletion, for Deleted tickets); the thread then shows "attachment removed" in place of the file. Closed and Resolved ticket text is kept and continues to feed the corpus.
-
+- `corpus_documents`: becomes an index or cache of the Google Doc (for example if embeddings are added later), not a separate source of truth. Keeps the redaction flag and the exclusions for internal notes and sensitive tickets.
+- `corpus_proposals(id, desk_id, kind, target_entry_ref, proposed_text, source_ticket_ids, origin, status, proposed_by, reviewed_by, reviewed_at, applied_at, doc_version_ref)`: `kind` is new or amend; `origin` is on_resolve_rating or nightly_digest; `status` is pending, approved, rejected, applied or needs_manual_apply.
+- `kb_ratings(ticket_id, rating, note, rated_by, rated_at)` and `kb_entry_usage(entry_ref, covered_count)` for the one-click rating and use counts.
 - Reporters see Paused as "On hold" with no date, and never see Deleted.
 - Closing by forwarding outside records `forwarded_to` so reports don't count it as a resolution.
 - An external reply to a forwarded-closed ticket reopens it and logs "reopened by external reply".
@@ -159,14 +155,18 @@ Behaviour by confidence:
 - Clarifying-question drafts when key details are missing.
 - Thread summaries and automatic handoff summaries on transfer.
 - Agent-facing suggestions, never auto-applied: category, a likely desk to transfer to (opted-in desks only), related or duplicate tickets (linked, never merged).
-- Gap detection: "no known answer" flag, and "add to knowledge base" on resolve with a redaction preview.
+- Gap detection: a "no known answer" flag on the ticket, feeding the "Missing" rating and the learning loop below.
 - Later tier, deferred: auto-send for high-confidence matches with "this solved it" / "I still need help" signed links.
 
-**Learning loop: proposals and review.** The corpus improves through proposals that a human approves; nothing the system concludes goes into the corpus on its own.
+**Learning loop: the Google Doc is the corpus.** The knowledge base is the team's Google Doc ("SIL Global Helpdesk Knowledge Base"), and it stays the single source of truth. Drafts read it in full (v1, no embeddings needed). The system proposes changes to it; a person approves every change; only then does the app edit the Doc.
 
-- **On resolve (per ticket).** When an agent marks a ticket Resolved, the app offers a proposed knowledge entry for that ticket: the problem and the resolution, written from the public thread only, with a redaction preview. The agent edits it and submits it as a proposal. A proposal is one of: a new entry, an amendment to an existing entry (shown as a diff), or a flag that an existing entry looks wrong or contradicted. The offer is skipped for sensitive tickets and for desks that opted out of the shared corpus.
-- **Nightly digest (across tickets).** A scheduled job analyzes each desk's day: sent replies compared with the AI draft (sent as written, lightly edited, rewritten, and what changed), outcomes (not reopened, satisfaction rating, thumbs up/down), recurring topics the corpus doesn't cover, and answers that contradict existing entries. It produces proposed entries, gaps and contradictions, heavily edited drafts (where mistakes like the earlier GHD-1307 would show up), and suggested changes to the desk's style or accuracy rules.
-- **Review queue.** Both sources land in one queue per desk. A desk admin approves, edits or rejects each proposal. Only approved entries join the corpus, with source tickets and approval history recorded. Rejected proposals are suppressed so they do not return. Entries flagged in the knowledge base's own "open items" list are never promoted to settled fact.
+- **On resolve (one click).** When an agent marks a ticket Resolved, they rate the knowledge base for that ticket: **Covered**, **Wrong or out of date**, or **Missing**, with an optional note. This takes seconds and writes no entry.
+  - *Covered:* nothing is proposed; the app counts the use against the matching entry so admins can see which entries matter most.
+  - *Wrong or out of date:* creates an **amendment proposal** against that entry, showing the current text and the suggested fix.
+  - *Missing:* held, not proposed. The nightly job groups similar misses, and once the same gap recurs (default three tickets in 30 days, configurable) it creates one **new-entry proposal** citing all the tickets. An agent can also use "propose now" for a one-off that matters.
+- **Nightly digest.** A scheduled job analyzes each desk's day: sent replies compared with the AI draft (sent as written, lightly edited, rewritten, and what changed), outcomes (not reopened, satisfaction rating, thumbs up/down), clustering of "Missing" ratings, and answers that contradict existing entries. It produces proposals, heavily edited drafts (where mistakes like the earlier GHD-1307 would show up), and suggested changes to the desk's style or accuracy rules.
+- **Review queue.** All proposals land in one queue per desk. A desk admin approves, edits or rejects each one. Rejected proposals are suppressed so they do not return. Items the Doc itself lists under "Open Items to Resolve" are never promoted to settled fact.
+- **Applying an approval.** The app edits the Doc through a service account with editor access to that one file. Before each edit it names a Doc version, so any change can be rolled back, and the Doc's version history is the audit trail. Amendments match the existing entry's exact text; new entries go under the relevant section heading. If the app cannot place an edit safely (for example the headings were restructured), it does not guess: the proposal stays open with the exact text to paste by hand. Test on a copy of the Doc first.
 - "Sent as written" and "not reopened" are evidence, not proof of correctness, which is why a person approves.
 - Personal details are redacted before analysis; internal notes and sensitive tickets are excluded.
 
@@ -203,6 +203,6 @@ Behaviour by confidence:
 - Domain-wide delegation scope: a leaked key could read any mailbox for the granted scopes. Mitigate with secrets-only storage, minimal scopes, admin review.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
-- Where approved corpus entries live: in the app only (my default, and what the schema assumes), or added as suggestions in the team's Google Doc knowledge base for people to merge by hand (keeps the Doc as the single source of truth, but needs manual merging).
+- Editing the Doc from the app has not been tested; try it on a copy first. The service account needs editor access to that one file.
 - Who reviews proposals: each desk admin for their own desk (default), or one person for everything.
 - Strategic questions in the brief Section 10 (why now, ROI, why earlier combine attempts failed) remain unanswered; none of the above depends on them.
