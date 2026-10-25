@@ -51,7 +51,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | See own tickets and public thread | n/a | n/a | n/a | yes | no (email only) |
 | See Deleted tickets | yes | yes (filter) | no | no | no |
 
-- Super admin is a global role on `profiles`. Desk roles live in `agent_desks.role` (`agent` or `admin`).
+- Super admin is a row in `helpdesk.super_admins`, deliberately **not** `public.profiles.role = 'admin'`: that role is shared with license-manager, and its admins should not automatically become help desk super admins (and the apps stay separable). Desk roles live in `agent_desks.role` (`agent` or `admin`) and change only through `helpdesk.set_desk_role()`, which audits each change and keeps at least one admin per desk.
 - A reporter is derived: anyone with no desk role who owns a requester record linked to their profile.
 - A sending desk keeps read-only access to a transferred ticket.
 - RLS: internal messages and `ticket_events` are never visible to reporters or CCs; reporters see only tickets where `requesters.profile_id` is their profile.
@@ -60,7 +60,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 
 - `desks`: add `logo_url`, theme columns (primary and accent, nullable, default means SIL theme), `accepts_transfers boolean default false`.
 - `desk_addresses(address, desk_id, can_send_from, is_default_reply, live_replies)`: several addresses per desk. `live_replies` is per address and defaults to false; it is turned on when the address is moved to an alias on the ingest mailbox. Addresses still on a group are either not ingested or ingested in shadow mode (read and draft, no replies).
-- `desk_mailboxes(mailbox, desk_id, auth_type)`: which mailbox feeds which desk (service account, or stored OAuth for outside domains).
+- `desk_mailboxes(mailbox, desk_id, auth_type, secret_prefix, isolation_label, enabled)`: which mailbox feeds which desk (`desk_id` null = shared mailbox routed by address). `auth_type` is `service_account` or `oauth` (outside domains; secrets named `<secret_prefix>_CLIENT_ID` etc.). `isolation_label`, when set, limits the poller to messages carrying that Gmail label, for mailboxes that also hold real mail. No credentials are stored in the database.
 - `requesters`: add `profile_id` (nullable), linked on sign-in by email match or manually by an agent.
 - `tickets`: rename status `solved` to `resolved`; add `new`, `deleted`; add `assignee_profile_id`, `deleted_at`, `sensitive boolean`, `detected_reporter_confidence`, `reporter_verified boolean`, `forwarded_to`, `source_address`.
 - `ticket_participants(ticket_id, email, type)`: CCs and agent followers.
@@ -94,8 +94,8 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 **Cutover (later, per desk).** When a desk trusts the app, move its address from the group to an alias on the ingest mailbox. YouTrack stops receiving mail at that point. Aliases make `deliveredto:` filters and "send as" straightforward. An address cannot be both a group and an alias.
 
 **Processing.**
-- Poll every minute via `pg_cron`. Pub/Sub push can come later if latency matters.
-- Per-desk Gmail label as the isolation boundary, as in the pilot. Unlabelled or unmatched mail goes to an **unrouted queue** for the super admin.
+- Poll every minute via `pg_cron` calling the `helpdesk-ingest` edge function, which requires the shared secret in `HELPDESK_CRON_SECRET` (the deploy uses `--no-verify-jwt`, so the secret is what keeps the endpoint from being public). Pub/Sub push can come later if latency matters.
+- A dedicated ingest mailbox is read from its inbox and routed by recipient or group headers matched against `desk_addresses`; no per-desk Gmail filters are needed. A mailbox that also holds real mail (the BTC pilot) is read only through its `isolation_label`. Mail matching no desk is parked with the label `HelpdeskUnrouted` and a row in `ingest_log` for the super admin, and is re-routed after the address is added. A message that fails three times is parked as `HelpdeskFailed`.
 - Threading by `In-Reply-To`/`References`, with Gmail thread ID as fallback.
 - **Loop protection (must-have):** ignore `Auto-Submitted`, out-of-office replies and bounce messages; never auto-reply to unknown or automated senders.
 - Attachments stored in Supabase Storage with size limits and scanning.
@@ -188,8 +188,8 @@ Behaviour by confidence:
 ## 13. Suggested build order
 
 0. **Admin prerequisites (Kate):** ingest user, Google Cloud service account with Gmail API, delegation authorization, one test group with the ingest mailbox as a member, key into Supabase secrets.
-1. **Schema:** `helpdesk` schema, statuses, roles, RLS, address and mailbox tables.
-2. **Ingestion:** poller, routing, unrouted queue, loop protection, threading, attachments. Parallel run on one desk alongside YouTrack.
+1. **Schema:** `helpdesk` schema, statuses, roles, RLS, address and mailbox tables. *(Built: `supabase/schema_helpdesk.sql`, with 63 access-rule checks in `supabase/tests/`.)*
+2. **Ingestion:** poller, routing, unrouted queue, loop protection, threading, attachments. Parallel run on one desk alongside YouTrack. *(Built: `supabase/functions/helpdesk-ingest/`. Receive-only: it sends no email yet, only flags forwards as reporter-unverified, and does not scan attachments. Unit-tested against fakes; not yet run against real Gmail, Supabase, or Google Group mail. See SETUP.md step 9.)*
 3. **Ticket UI:** queue, ticket detail, reply and internal note, assignment, CCs, notifications.
 4. **Reporter view, admin screens, branding.**
 5. **Reporter detection:** layers 1, 2 and 4, then layer 3 only if needed.
