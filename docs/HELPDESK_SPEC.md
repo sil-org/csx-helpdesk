@@ -25,7 +25,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 15 | Default theme is SIL brand (SIL Blue `#005CB9`). Playfair for titles, Source Sans 3 for UI. Per-desk logo and optional color override. |
 | 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
 | 17 | Deleted tickets are purged, and all ticket attachments and media are removed, after a configurable retention period, default 60 days. |
-| 18 | The parallel run with YouTrack is shadow mode: the app ingests and drafts but does not send replies until the desk's alias cutover. |
+| 18 | The parallel run with YouTrack is per address: lesser-used addresses move from their Google Group to an alias on the ingest mailbox and run live in the app (replies enabled); busy addresses stay on their groups and YouTrack until cutover. |
 
 ## 2. Architecture
 
@@ -58,7 +58,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 ## 4. Data model (changes to `schema_helpdesk.sql`)
 
 - `desks`: add `logo_url`, theme columns (primary and accent, nullable, default means SIL theme), `accepts_transfers boolean default false`.
-- `desk_addresses(address, desk_id, can_send_from, is_default_reply)`: several addresses per desk.
+- `desk_addresses(address, desk_id, can_send_from, is_default_reply, live_replies)`: several addresses per desk. `live_replies` is per address and defaults to false; it is turned on when the address is moved to an alias on the ingest mailbox. Addresses still on a group are either not ingested or ingested in shadow mode (read and draft, no replies).
 - `desk_mailboxes(mailbox, desk_id, auth_type)`: which mailbox feeds which desk (service account, or stored OAuth for outside domains).
 - `requesters`: add `profile_id` (nullable), linked on sign-in by email match or manually by an agent.
 - `tickets`: rename status `solved` to `resolved`; add `new`, `deleted`; add `assignee_profile_id`, `deleted_at`, `sensitive boolean`, `detected_reporter_confidence`, `reporter_verified boolean`, `forwarded_to`, `source_address`.
@@ -66,7 +66,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `ticket_messages`: keep `internal`; add attachment references.
 - `ticket_events`: used for every reassignment, transfer, reporter change, promotion and reopen.
 - `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
-- `desk_settings`: also `attachment_retention_days` (nullable; null uses the global default) and `live_replies boolean default false` (turned on at cutover).
+- `desk_settings`: also `attachment_retention_days` (nullable; null uses the global default) (`live_replies` lives on `desk_addresses`, not here).
 - Global settings (super admin): default `deleted_retention_days` = 60 and default `attachment_retention_days` = 60.
 - `corpus_documents`: add redaction flag; exclusions for internal notes and sensitive tickets.
 
@@ -90,7 +90,8 @@ New (default) -> Open (first agent action: reply, assign or status change) -> Wa
 
 - Group delivery means `deliveredto:` filters won't match. Route by group headers (`List-Id` / `X-Google-Group-Id`), falling back to recipient addresses, through `desk_addresses`.
 - Strip group footers and subject prefixes before storing text.
-- **Shadow mode:** during the parallel run the app ingests mail and generates drafts but does not send replies (`live_replies` is off); agents keep replying in YouTrack. Replies are enabled per desk at cutover, when the address is a plain alias with ordinary "send as". This avoids needing to test sending as a group.
+- **Parallel run is per address.** Move lesser-used addresses off their group and onto the ingest mailbox as aliases; they run live in the app (plain "send as", `live_replies` on). Busy addresses stay on their groups and YouTrack, either not ingested or ingested in shadow mode (the app reads and drafts but does not send). This avoids needing to test sending as a group.
+- Moving an address stops YouTrack receiving it. Replies to older YouTrack conversations on that address become new tickets in the app, so move addresses at quiet times or let open YouTrack tickets finish first. A desk can have live and not-yet-moved addresses at the same time.
 
 **Cutover (later, per desk).** When a desk trusts the app, move its address from the group to an alias on the ingest mailbox. YouTrack stops receiving mail at that point. Aliases make `deliveredto:` filters and "send as" straightforward. An address cannot be both a group and an alias.
 
