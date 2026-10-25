@@ -26,6 +26,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
 | 17 | Deleted tickets are purged, and all ticket attachments and media are removed, after a configurable retention period, default 60 days. |
 | 18 | The parallel run with YouTrack is per address: lesser-used addresses move from their Google Group to an alias on the ingest mailbox and run live in the app (replies enabled); busy addresses stay on their groups and YouTrack until cutover. |
+| 19 | The corpus improves through a review queue: an on-resolve proposal per ticket and a nightly digest across tickets; a desk admin approves everything before it joins the corpus. |
 
 ## 2. Architecture
 
@@ -68,7 +69,8 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
 - `desk_settings`: also `attachment_retention_days` (nullable; null uses the global default) (`live_replies` lives on `desk_addresses`, not here).
 - Global settings (super admin): default `deleted_retention_days` = 60 and default `attachment_retention_days` = 60.
-- `corpus_documents`: add redaction flag; exclusions for internal notes and sensitive tickets.
+- `corpus_documents`: add redaction flag; exclusions for internal notes and sensitive tickets; `approved_by`, `approved_at`, version history.
+- `corpus_proposals(id, desk_id, kind, target_document_id, proposed_text, source_ticket_ids, origin, status, proposed_by, reviewed_by, reviewed_at)`: `kind` is new, amend or flag; `origin` is on_resolve or nightly_digest; `status` is pending, approved or rejected.
 
 ## 5. Statuses
 
@@ -160,6 +162,14 @@ Behaviour by confidence:
 - Gap detection: "no known answer" flag, and "add to knowledge base" on resolve with a redaction preview.
 - Later tier, deferred: auto-send for high-confidence matches with "this solved it" / "I still need help" signed links.
 
+**Learning loop: proposals and review.** The corpus improves through proposals that a human approves; nothing the system concludes goes into the corpus on its own.
+
+- **On resolve (per ticket).** When an agent marks a ticket Resolved, the app offers a proposed knowledge entry for that ticket: the problem and the resolution, written from the public thread only, with a redaction preview. The agent edits it and submits it as a proposal. A proposal is one of: a new entry, an amendment to an existing entry (shown as a diff), or a flag that an existing entry looks wrong or contradicted. The offer is skipped for sensitive tickets and for desks that opted out of the shared corpus.
+- **Nightly digest (across tickets).** A scheduled job analyzes each desk's day: sent replies compared with the AI draft (sent as written, lightly edited, rewritten, and what changed), outcomes (not reopened, satisfaction rating, thumbs up/down), recurring topics the corpus doesn't cover, and answers that contradict existing entries. It produces proposed entries, gaps and contradictions, heavily edited drafts (where mistakes like the earlier GHD-1307 would show up), and suggested changes to the desk's style or accuracy rules.
+- **Review queue.** Both sources land in one queue per desk. A desk admin approves, edits or rejects each proposal. Only approved entries join the corpus, with source tickets and approval history recorded. Rejected proposals are suppressed so they do not return. Entries flagged in the knowledge base's own "open items" list are never promoted to settled fact.
+- "Sent as written" and "not reopened" are evidence, not proof of correctness, which is why a person approves.
+- Personal details are redacted before analysis; internal notes and sensitive tickets are excluded.
+
 **Corpus policy.**
 - Shared across all desks (decision 14). Each desk may opt out of contributing (`contribute_to_corpus`); redaction is on by default.
 - Redact emails, phone numbers, passwords and tokens before embedding.
@@ -184,7 +194,7 @@ Behaviour by confidence:
 4. **Reporter view, admin screens, branding.**
 5. **Reporter detection:** layers 1, 2 and 4, then layer 3 only if needed.
 6. **Transfers and external forwards.**
-7. **RAG and automatic AI drafts.**
+7. **RAG and automatic AI drafts, then the learning loop** (on-resolve proposals, nightly digest, review queue).
 8. **SLA, reports, nudge, auto-close, satisfaction rating.**
 9. **SSO swap; per-desk alias cutover and YouTrack retirement.**
 
@@ -193,4 +203,6 @@ Behaviour by confidence:
 - Domain-wide delegation scope: a leaked key could read any mailbox for the granted scopes. Mitigate with secrets-only storage, minimal scopes, admin review.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
+- Where approved corpus entries live: in the app only (my default, and what the schema assumes), or added as suggestions in the team's Google Doc knowledge base for people to merge by hand (keeps the Doc as the single source of truth, but needs manual merging).
+- Who reviews proposals: each desk admin for their own desk (default), or one person for everything.
 - Strategic questions in the brief Section 10 (why now, ROI, why earlier combine attempts failed) remain unanswered; none of the above depends on them.
