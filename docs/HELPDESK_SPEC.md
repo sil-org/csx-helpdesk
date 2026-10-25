@@ -24,7 +24,8 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 14 | Shared RAG corpus across all desks; each desk may opt out of contributing. |
 | 15 | Default theme is SIL brand (SIL Blue `#005CB9`). Playfair for titles, Source Sans 3 for UI. Per-desk logo and optional color override. |
 | 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
-| 17 | Deleted tickets are purged after a configurable retention period, default 60 days. |
+| 17 | Deleted tickets are purged, and all ticket attachments and media are removed, after a configurable retention period, default 60 days. |
+| 18 | The parallel run with YouTrack is shadow mode: the app ingests and drafts but does not send replies until the desk's alias cutover. |
 
 ## 2. Architecture
 
@@ -65,12 +66,13 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `ticket_messages`: keep `internal`; add attachment references.
 - `ticket_events`: used for every reassignment, transfer, reporter change, promotion and reopen.
 - `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
-- Global settings (super admin): default `deleted_retention_days` = 60.
+- `desk_settings`: also `attachment_retention_days` (nullable; null uses the global default) and `live_replies boolean default false` (turned on at cutover).
+- Global settings (super admin): default `deleted_retention_days` = 60 and default `attachment_retention_days` = 60.
 - `corpus_documents`: add redaction flag; exclusions for internal notes and sensitive tickets.
 
 ## 5. Statuses
 
-New (default) -> Open (first agent action: reply, assign or status change) -> Waiting for response (agent asked a question) -> Open (reporter replies) -> Resolved -> Closed. Paused (until date Z) freezes the SLA clock and auto-resumes to Open. Deleted is a soft delete with an audit event. A daily job permanently removes tickets `deleted_retention_days` after deletion (global default 60, per-desk override), together with their attachments and any corpus documents made from them. Closed and Resolved tickets are not purged by this job.
+New (default) -> Open (first agent action: reply, assign or status change) -> Waiting for response (agent asked a question) -> Open (reporter replies) -> Resolved -> Closed. Paused (until date Z) freezes the SLA clock and auto-resumes to Open. Deleted is a soft delete with an audit event. A daily job permanently removes tickets `deleted_retention_days` after deletion (global default 60, per-desk override), together with their attachments and any corpus documents made from them. Attachments and media on every ticket are removed `attachment_retention_days` after the ticket is Closed (or after deletion, for Deleted tickets); the thread then shows "attachment removed" in place of the file. Closed and Resolved ticket text is kept and continues to feed the corpus.
 
 - Reporters see Paused as "On hold" with no date, and never see Deleted.
 - Closing by forwarding outside records `forwarded_to` so reports don't count it as a resolution.
@@ -88,7 +90,7 @@ New (default) -> Open (first agent action: reply, assign or status change) -> Wa
 
 - Group delivery means `deliveredto:` filters won't match. Route by group headers (`List-Id` / `X-Google-Group-Id`), falling back to recipient addresses, through `desk_addresses`.
 - Strip group footers and subject prefixes before storing text.
-- To verify with one group: Reply-To rewriting, whether outside posts are allowed, and whether the ingest mailbox can send as the group address.
+- **Shadow mode:** during the parallel run the app ingests mail and generates drafts but does not send replies (`live_replies` is off); agents keep replying in YouTrack. Replies are enabled per desk at cutover, when the address is a plain alias with ordinary "send as". This avoids needing to test sending as a group.
 
 **Cutover (later, per desk).** When a desk trusts the app, move its address from the group to an alias on the ingest mailbox. YouTrack stops receiving mail at that point. Aliases make `deliveredto:` filters and "send as" straightforward. An address cannot be both a group and an alias.
 
@@ -188,7 +190,6 @@ Behaviour by confidence:
 ## 14. Risks and open items
 
 - Domain-wide delegation scope: a leaked key could read any mailbox for the granted scopes. Mitigate with secrets-only storage, minimal scopes, admin review.
-- Groups: Reply-To rewriting, footers and send-as-group need to be verified on one real group.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
 - Strategic questions in the brief Section 10 (why now, ROI, why earlier combine attempts failed) remain unanswered; none of the above depends on them.
