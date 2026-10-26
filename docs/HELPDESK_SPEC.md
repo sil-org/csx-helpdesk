@@ -91,7 +91,9 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - Resend's own `authentication` block (`dmarc: fail`) judges the group's re-sent copy and must not be used. Use `X-Original-Authentication-Results` (Google's verdict before the group) for reporter verification.
 - Repeated headers arrive as JSON-array strings and the group's `List-*` headers as one JSON object; `normalizeHeaders` expands both.
 
-**Not yet verified:** the attachment-content download call, Resend's message size limit, retention and plan/price for receiving, delivery from groups that restrict external senders, and a second group's headers (a single Resend address serves every desk, routed by `received_for`).
+**From Resend's quotas page:** received emails count toward the same daily and monthly quota as sent ones (free plan: 100 a day and 3,000 a month; paid plans: no daily cap, monthly quota by tier); the API rate limit is 10 requests a second per team across all keys; email data is kept 30 days (so an unrouted message can be re-processed only within 30 days, and everything we need must be stored in our own database, which the function does at receipt). The quota and rate limit are per Resend team, so another project on the same team shares them, and spam sent to a group address counts like real mail. Resend also has an "Inboxes" feature (3 included, more at $1 each); the managed receiving address worked without creating one and a single address is enough for routing by `received_for`, so we don't use it.
+
+**Not yet verified:** the attachment-content download call, Resend's maximum received message size, delivery from groups that restrict external senders, what happens to mail that arrives after the quota is exhausted, and a second group's headers (a single Resend address serves every desk, routed by `received_for`).
 
 **Processing (`supabase/functions/helpdesk-inbound/`).**
 - The deploy uses `--no-verify-jwt`, so authentication is ours: the Svix signature against `RESEND_WEBHOOK_SECRET` (the function refuses to run without it). One stored email can be re-processed by hand with `HELPDESK_REPROCESS_SECRET`.
@@ -203,7 +205,7 @@ Behaviour by confidence:
 
 ## 14. Risks and open items
 
-- Resend credentials: the API key can read received mail (and, if Full access, send); keep it in Supabase secrets only, use the narrowest scope Resend offers, and give outbound sending its own key. A forged webhook is prevented by the Svix signature check. Resend holds copies of ticket email for its retention period, which is a data-policy point to confirm.
+- Resend credentials: the API key can read received mail (and, if Full access, send); keep it in Supabase secrets only, use the narrowest scope Resend offers, and give outbound sending its own key. A forged webhook is prevented by the Svix signature check. Resend holds copies of ticket email for 30 days, which is a data-policy point to confirm. Quota: received mail shares the Resend team's email quota with anything else on that team, so a spam burst or a busy day could block other sending; decide whether helpdesk traffic needs its own plan or team.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
 - Editing the Doc from the app has not been tested; try it on a copy first. The service account needs editor access to that one file.

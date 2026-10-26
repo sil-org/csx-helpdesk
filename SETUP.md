@@ -344,9 +344,17 @@ flags forwards as "reporter unverified"), or scan attachments for viruses.
    event **`email.received`** only. Copy the endpoint's **signing secret**
    (`whsec_...`). Use the exact https URL (a redirect makes Resend retry
    forever, since it does not follow redirects).
-4. **Check plan and limits** in Resend (maximum received message size, how long
-   received mail is kept, monthly receiving volume and price) before sending
-   real traffic through it.
+4. **Check plan and limits** before sending real traffic through it. From
+   Resend's quotas page: every *received* email counts as one email against
+   the account's daily and monthly quota, the same as a sent one (so does each
+   To/Cc/Bcc recipient of a sent email); the free plan allows 100 emails a day
+   and 3,000 a month, paid plans have no daily limit but a monthly quota by
+   tier; the API allows 10 requests a second per team, shared by every API key
+   (this function makes one request per email, plus one per attachment); and
+   Resend keeps email data for **30 days**. The quota and rate limit are per
+   Resend *team*, so any other project on the same team shares them. Still
+   unchecked: the maximum size of a received message. Check the **Usage page**
+   for current volume before connecting `helpdesk@sil.org`.
 
 ### 9b. Supabase secrets and deploy
 
@@ -386,8 +394,9 @@ anyone on the internet from posting fake mail to it.
 ### 9d. Triage and re-processing
 
 - Mail matching no desk address is not lost: it has an `ingest_log` row with
-  `outcome = 'unrouted'` (and stays in Resend). After adding the missing
-  address to `desk_addresses`, re-process it with the `email_id`
+  `outcome = 'unrouted'` (and stays in Resend for 30 days; after that it can't
+  be re-processed). After adding the missing address to `desk_addresses`,
+  re-process it with the `email_id`
   (the id on the Resend Receiving page, or in the log row's
   `gmail_message_id` column):
 

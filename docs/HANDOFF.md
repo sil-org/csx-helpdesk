@@ -36,6 +36,6 @@ For a fresh Claude Code session (or a person) picking this up. Read in this orde
 
 ## Open questions waiting on Kate
 
-Resend receiving limits/plan/retention; data-policy sign-off; who reviews corpus
+Resend plan (received mail counts toward the team's quota; free plan is 100 emails a day) and the maximum received message size; data-policy sign-off; who reviews corpus
 proposals; SSO timing; pilot desk agents and success criteria; erasure-request
 handling; whether the GHD responder should point at the merged Doc.
