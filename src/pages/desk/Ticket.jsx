@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import DeskHeader from '../../components/DeskHeader'
 import StatusPill from '../../components/StatusPill'
 import { useAuth } from '../../context/AuthContext'
@@ -8,6 +8,7 @@ import { hd, profilesByIds, relativeTime, STATUS_LABEL } from '../../lib/helpdes
 
 export default function Ticket() {
   const { slug, ticketNumber } = useParams()
+  const navigate = useNavigate()
   const { profile } = useAuth()
   const { agentDesks, allDesks, isSuperAdmin, loading: accessLoading } = useHelpdesk()
   const [desk, setDesk] = useState(null)
@@ -156,7 +157,8 @@ export default function Ticket() {
 
   async function setStatus(status) {
     const { error } = await hd.from('tickets').update({ status }).eq('id', ticket.id)
-    if (error) setError(error.message); else reload()
+    if (error) { setError(error.message); return }
+    if (status === 'resolved' || status === 'closed') navigate('/dashboard'); else reload()
   }
 
   async function addCc() {
