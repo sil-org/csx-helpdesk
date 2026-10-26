@@ -524,6 +524,37 @@ drop trigger if exists ticket_messages_after_insert on helpdesk.ticket_messages;
 create trigger ticket_messages_after_insert after insert on helpdesk.ticket_messages
   for each row execute function helpdesk.ticket_messages_after_insert();
 
+-- Emails a "you've been added" sign-in link when someone is newly granted
+-- access to a desk. Only fires on a genuine new row: set_desk_role's
+-- `on conflict (profile_id, desk_id) do update` path for a role change on an
+-- existing pairing (promote/demote) takes the UPDATE trigger path instead
+-- (there isn't one), so this never re-fires for that.
+--
+-- One-time setup, not handled by this file (the secret must never be
+-- committed): generate a secret the same way as the KB refresh one
+-- (openssl rand -hex 32), then set the SAME value in both places —
+--   supabase secrets set HELPDESK_NOTIFY_SECRET=<value>   (edge function)
+--   select vault.create_secret('<value>', 'helpdesk_notify_secret');  (SQL editor)
+
+create or replace function helpdesk.notify_new_agent() returns trigger
+language plpgsql security definer set search_path = helpdesk, public, extensions as $$
+begin
+  perform net.http_post(
+    url := 'https://lxomebvymgolbzgkxqgu.supabase.co/functions/v1/notify-agent-added',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-helpdesk-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'helpdesk_notify_secret')
+    ),
+    body := jsonb_build_object('profile_id', new.profile_id, 'desk_id', new.desk_id)
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists agent_desks_notify_insert on helpdesk.agent_desks;
+create trigger agent_desks_notify_insert after insert on helpdesk.agent_desks
+  for each row execute function helpdesk.notify_new_agent();
+
 -- ── RPC: change someone's role on a desk ─────────────────────────────────
 -- Desk admins can promote/demote on their own desk; super admins on any.
 -- Every change is logged, and a desk can never be left without an admin.
