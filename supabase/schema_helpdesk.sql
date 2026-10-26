@@ -264,6 +264,38 @@ create table if not exists helpdesk.ticket_links (
   primary key (ticket_id, linked_ticket_id)
 );
 
+-- ── AI drafts (spec section 11) ───────────────────────────────────────────
+
+-- Never sent itself; the compose box starts from one of these and an agent
+-- edits/sends it as a normal outbound ticket_messages row. Written by
+-- generate-draft (service_role) only. superseded_at is set either by a new
+-- requester reply (generate-draft supersedes the old one before inserting
+-- a fresh draft) or by an agent dismissing it; either way "no longer the
+-- active suggestion" — older drafts stay for history, never deleted.
+create table if not exists helpdesk.ticket_drafts (
+  id uuid primary key default gen_random_uuid(),
+  ticket_id uuid not null references helpdesk.tickets(id) on delete cascade,
+  body text not null,
+  cited_sources jsonb,
+  model text,
+  superseded_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists ticket_drafts_ticket_id_idx on helpdesk.ticket_drafts(ticket_id, created_at desc);
+
+-- Cached full text of the knowledge-base Google Doc (decision 19: the Doc
+-- stays the single source of truth; v1 reads it in full, no embeddings).
+-- Refreshed daily by refresh-kb-cache rather than fetched live on every
+-- draft, since drafts are latency- and cost-sensitive and the Doc rarely
+-- changes within a day.
+create table if not exists helpdesk.kb_cache (
+  id boolean primary key default true check (id),
+  content text,
+  source_doc_id text,
+  refreshed_at timestamptz
+);
+insert into helpdesk.kb_cache (id) values (true) on conflict do nothing;
+
 -- ── Ingestion bookkeeping ────────────────────────────────────────────────
 
 -- One row per mailbox per poll: the "last successful run" heartbeat.
@@ -727,6 +759,8 @@ alter table helpdesk.ticket_events enable row level security;
 alter table helpdesk.ticket_links enable row level security;
 alter table helpdesk.ingest_runs enable row level security;
 alter table helpdesk.ingest_log enable row level security;
+alter table helpdesk.ticket_drafts enable row level security;
+alter table helpdesk.kb_cache enable row level security;
 
 -- desks: branding is readable by any signed-in user (reporters see the
 -- desk that owns their ticket); only super admins create/delete desks.
@@ -879,6 +913,20 @@ drop policy if exists ingest_log_select on helpdesk.ingest_log;
 create policy ingest_log_select on helpdesk.ingest_log for select to authenticated
   using (helpdesk.is_super_admin());
 
+-- ticket_drafts: staff of the ticket only (never the reporter). Written by
+-- generate-draft (service_role); an agent may only dismiss one (see grants).
+drop policy if exists ticket_drafts_select on helpdesk.ticket_drafts;
+create policy ticket_drafts_select on helpdesk.ticket_drafts for select to authenticated
+  using (helpdesk.is_ticket_staff(ticket_id));
+drop policy if exists ticket_drafts_update on helpdesk.ticket_drafts;
+create policy ticket_drafts_update on helpdesk.ticket_drafts for update to authenticated
+  using (helpdesk.is_ticket_staff(ticket_id)) with check (helpdesk.is_ticket_staff(ticket_id));
+
+-- kb_cache: operational/debugging visibility, super admin only.
+drop policy if exists kb_cache_select on helpdesk.kb_cache;
+create policy kb_cache_select on helpdesk.kb_cache for select to authenticated
+  using (helpdesk.is_super_admin());
+
 -- ── Grants ───────────────────────────────────────────────────────────────
 -- A custom schema gets no default privileges in Supabase. RLS (above) is the
 -- row guard; these grants are the column / operation guard.
@@ -907,10 +955,46 @@ grant insert on helpdesk.ticket_messages to authenticated;
 grant insert, delete on helpdesk.ticket_participants to authenticated;
 grant insert, delete on helpdesk.ticket_links to authenticated;
 
+-- An agent may only dismiss a draft (superseded_at); the content itself is
+-- generate-draft's (service_role gets full access via the earlier blanket grant).
+grant update (superseded_at) on helpdesk.ticket_drafts to authenticated;
+
 revoke all on function helpdesk.set_desk_role(uuid, uuid, text) from public;
 grant execute on function helpdesk.set_desk_role(uuid, uuid, text) to authenticated, service_role;
 revoke all on function helpdesk.ingest_inbound(jsonb) from public;
 grant execute on function helpdesk.ingest_inbound(jsonb) to service_role;
+
+-- ── Daily knowledge-base refresh ─────────────────────────────────────────
+-- Project-specific (the URL below is this Supabase project's); update it if
+-- this app is ever split to its own project (see SETUP.md step 1).
+--
+-- One-time setup, not handled by this file (the secret must never be
+-- committed): generate a secret the same way as HELPDESK_REPROCESS_SECRET
+-- (openssl rand -hex 32), then set the SAME value in both places —
+--   supabase secrets set HELPDESK_KB_REFRESH_SECRET=<value>   (edge function)
+--   select vault.create_secret('<value>', 'helpdesk_kb_refresh_secret');  (SQL editor)
+-- Vault, not a plain column, so the cron job definition below (visible to
+-- other admins on this shared project via cron.job) never shows the raw value.
+
+create extension if not exists pg_cron with schema pg_catalog;
+create extension if not exists pg_net with schema extensions;
+
+select cron.unschedule(jobid) from cron.job where jobname = 'helpdesk-refresh-kb-cache';
+
+select cron.schedule(
+  'helpdesk-refresh-kb-cache',
+  '17 3 * * *', -- once daily, off the hour
+  $cron$
+  select net.http_post(
+    url := 'https://lxomebvymgolbzgkxqgu.supabase.co/functions/v1/refresh-kb-cache',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-helpdesk-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'helpdesk_kb_refresh_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $cron$
+);
 
 -- ── Bootstrap: first super admin ─────────────────────────────────────────
 -- After your first sign-in, run this in the SQL editor (replace the email).

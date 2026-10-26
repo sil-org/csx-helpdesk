@@ -75,12 +75,34 @@ Deno.serve(async (req) => {
       emailId,
       await loadAddressMap(db)
     )
+    if (outcome.status === 'ingested') triggerDraft(outcome.ticket_id)
     return json(outcome)
   } catch (err) {
     console.error('helpdesk-inbound failed:', (err as Error).message)
     return json({ error: (err as Error).message }, 500)
   }
 })
+
+// Fire-and-forget: a new ticket, or a new non-internal requester reply,
+// kicks off generate-draft in the background without awaiting it, so a slow
+// or down Claude API can never affect this webhook's response to Resend
+// (which retries the whole thing on timeout) or ingestion reliability.
+// A failed draft call just means no draft — a soft failure, not a broken ticket.
+function triggerDraft(ticketId: string) {
+  const call = fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-draft`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ticket_id: ticketId }),
+  }).catch((err) => console.error('generate-draft trigger failed:', err.message))
+
+  // EdgeRuntime is a Supabase Edge Functions global (not in standard Deno
+  // lib types) that keeps background work alive after the response is sent.
+  const runtime = (globalThis as { EdgeRuntime?: { waitUntil(p: Promise<unknown>): void } }).EdgeRuntime
+  if (runtime) runtime.waitUntil(call)
+}
 
 async function sameSecret(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder()
