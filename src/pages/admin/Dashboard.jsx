@@ -15,6 +15,13 @@ export default function AdminDashboard() {
   const [error, setError] = useState(null)
   const [savingField, setSavingField] = useState(null)
   const [settings, setSettings] = useState(null)
+  const [creatingDesk, setCreatingDesk] = useState(false)
+  const [newDeskName, setNewDeskName] = useState('')
+  const [newDeskSlug, setNewDeskSlug] = useState('')
+  const [newDeskAddress, setNewDeskAddress] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [addresses, setAddresses] = useState([])
+  const [newAddress, setNewAddress] = useState('')
 
   const desks = isSuperAdmin ? allDesks : agentDesks.filter((d) => d.role === 'admin')
   const sel = desks.find((d) => d.id === selId) ?? desks[0] ?? null
@@ -32,9 +39,36 @@ export default function AdminDashboard() {
     setSettings(data ?? { tone_notes: null, signature: null })
   }
 
+  async function loadAddresses(deskId) {
+    const { data, error } = await hd.from('desk_addresses').select('address, status').eq('desk_id', deskId).order('created_at')
+    if (error) { setError(error.message); return }
+    setAddresses(data ?? [])
+  }
+
   useEffect(() => {
-    if (sel) { loadPeople(sel.id); loadSettings(sel.id) }
+    if (sel) { loadPeople(sel.id); loadSettings(sel.id); loadAddresses(sel.id) }
   }, [sel?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every desk address is globally unique (desk_addresses.address is the
+  // primary key — an address can only ever ingest into one desk), so this
+  // is the one error worth a friendlier message than the raw Postgres one.
+  function friendlyAddressError(err) {
+    return err.code === '23505' ? 'That address is already assigned to another desk.' : err.message
+  }
+
+  async function addAddress() {
+    const address = newAddress.trim().toLowerCase()
+    if (!address) return
+    setError(null)
+    const { error } = await hd.from('desk_addresses').insert({ address, desk_id: sel.id })
+    if (error) setError(friendlyAddressError(error)); else { setNewAddress(''); loadAddresses(sel.id) }
+  }
+
+  async function removeAddress(address) {
+    setError(null)
+    const { error } = await hd.from('desk_addresses').delete().eq('address', address)
+    if (error) setError(error.message); else loadAddresses(sel.id)
+  }
 
   async function updateSettings(fields) {
     setSavingField(Object.keys(fields)[0])
@@ -53,6 +87,41 @@ export default function AdminDashboard() {
     // so a manual page refresh picks it up — acceptable for an admin-only screen.
   }
 
+  function slugify(name) {
+    return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  }
+
+  async function createDesk() {
+    const name = newDeskName.trim()
+    const slug = (newDeskSlug.trim() || slugify(name))
+    const address = newDeskAddress.trim().toLowerCase()
+    if (!name || !slug) { setError('Name is required.'); return }
+    setCreating(true)
+    setError(null)
+
+    const { data: desk, error: deskErr } = await hd.from('desks').insert({ slug, name }).select().single()
+    if (deskErr) { setCreating(false); setError(deskErr.message); return }
+
+    const { error: settingsErr } = await hd.from('desk_settings').insert({ desk_id: desk.id })
+    if (settingsErr) { setCreating(false); setError(settingsErr.message); return }
+
+    if (address) {
+      const { error: addrErr } = await hd.from('desk_addresses').insert({ address, desk_id: desk.id })
+      if (addrErr) { setCreating(false); setError(friendlyAddressError(addrErr)); return }
+    }
+
+    // Make the creator the desk's first admin — set_desk_role requires being
+    // a desk admin already, which a super admin always counts as, even on a
+    // desk with no agent_desks rows yet (is_desk_admin's super-admin branch).
+    const { error: roleErr } = await hd.rpc('set_desk_role', { p_desk_id: desk.id, p_profile_id: profile.id, p_role: 'admin' })
+    setCreating(false)
+    if (roleErr) { setError(roleErr.message); return }
+
+    // allDesks is loaded once per sign-in by HelpdeskContext; a full reload
+    // is the simplest way to pick up the new desk (same tradeoff as above).
+    window.location.reload()
+  }
+
   async function setRole(targetProfileId, role) {
     setError(null)
     const { error } = await hd.rpc('set_desk_role', { p_desk_id: sel.id, p_profile_id: targetProfileId, p_role: role })
@@ -69,7 +138,7 @@ export default function AdminDashboard() {
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-400">Loading&hellip;</div>
 
-  if (!desks.length) {
+  if (!desks.length && !isSuperAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center text-gray-500 text-sm px-4 text-center">
         You're not a desk admin or super admin on any desk.
@@ -89,7 +158,54 @@ export default function AdminDashboard() {
         <div className="flex-none w-[300px] flex flex-col gap-2.5">
           <div className="flex items-center justify-between gap-2">
             <h1 className="font-display text-[22px] m-0">Desks</h1>
+            {isSuperAdmin && (
+              <button onClick={() => setCreatingDesk((o) => !o)} className="min-h-[36px] px-3 bg-brand text-white rounded-lg text-sm font-semibold">
+                {creatingDesk ? 'Cancel' : 'New desk'}
+              </button>
+            )}
           </div>
+
+          {creatingDesk && (
+            <div className="bg-white border border-gray-300 rounded-xl p-3.5 flex flex-col gap-2.5">
+              <div>
+                <Label>Name</Label>
+                <input
+                  value={newDeskName}
+                  onChange={(e) => setNewDeskName(e.target.value)}
+                  placeholder="Dallas Help Desk"
+                  className="min-h-[40px] w-full px-2.5 border border-gray-300 rounded-lg text-sm"
+                />
+              </div>
+              <div>
+                <Label>Slug</Label>
+                <input
+                  value={newDeskSlug}
+                  onChange={(e) => setNewDeskSlug(e.target.value)}
+                  placeholder={slugify(newDeskName) || 'dallas'}
+                  className="min-h-[40px] w-full px-2.5 border border-gray-300 rounded-lg text-sm"
+                />
+                <div className="text-xs text-gray-500 mt-1">Used in the URL (/d/&lt;slug&gt;). Defaults from the name if left blank.</div>
+              </div>
+              <div>
+                <Label>Incoming address (optional)</Label>
+                <input
+                  value={newDeskAddress}
+                  onChange={(e) => setNewDeskAddress(e.target.value)}
+                  placeholder="dallas-help@sil.org"
+                  className="min-h-[40px] w-full px-2.5 border border-gray-300 rounded-lg text-sm"
+                />
+                <div className="text-xs text-gray-500 mt-1">Can add or change addresses later; also still needs adding to that address's Google Group (SETUP.md step 9c).</div>
+              </div>
+              <button
+                onClick={createDesk}
+                disabled={creating || !newDeskName.trim()}
+                className="min-h-[40px] px-3 bg-brand text-white rounded-lg text-sm font-semibold disabled:opacity-50"
+              >
+                {creating ? 'Creating…' : 'Create desk'}
+              </button>
+            </div>
+          )}
+
           {desks.map((d) => (
             <button
               key={d.id}
@@ -154,6 +270,34 @@ export default function AdminDashboard() {
                 </span>
               </label>
               {savingField && <div className="text-xs text-gray-400">Saving&hellip;</div>}
+            </Card>
+
+            <Card>
+              <div className="text-base font-bold">Addresses</div>
+              <div className="text-xs text-gray-500 -mt-2">
+                Mail to any of these ingests into this desk. Each address can only belong to one desk. A new
+                address still needs adding to that address's Google Group (SETUP.md step 9c) before mail reaches it.
+              </div>
+              {addresses.map((a) => (
+                <div key={a.address} className="flex items-center justify-between gap-2 text-sm">
+                  <span>
+                    {a.address}
+                    <span className={`ml-2 text-xs font-semibold px-1.5 py-0.5 rounded-full ${a.status === 'receiving' ? 'bg-[#EDF5EA] text-[#38751C]' : 'bg-gray-100 text-gray-500'}`}>
+                      {a.status === 'receiving' ? 'receiving' : 'pending'}
+                    </span>
+                  </span>
+                  <button onClick={() => removeAddress(a.address)} className="text-xs text-gray-500 hover:text-red-700">Remove</button>
+                </div>
+              ))}
+              <div className="flex gap-2">
+                <input
+                  value={newAddress}
+                  onChange={(e) => setNewAddress(e.target.value)}
+                  placeholder="helpdesk+fch@sil.org"
+                  className="min-h-[40px] flex-1 px-2.5 border border-gray-300 rounded-lg text-sm"
+                />
+                <button onClick={addAddress} className="min-h-[40px] px-3 border border-gray-300 rounded-lg text-sm">Add</button>
+              </div>
             </Card>
 
             {settings && (
