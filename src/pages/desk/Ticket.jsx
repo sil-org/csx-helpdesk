@@ -268,7 +268,7 @@ export default function Ticket() {
               </div>
               <div className="p-4 flex flex-col gap-3" style={{ background: isNote ? '#FFF8E8' : '#fff' }}>
                 <div className="text-sm font-bold" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
-                  {isNote ? 'Internal note. Only agents on this desk will see this.' : 'Public reply. The reporter and CCs will receive this by email.'}
+                  {isNote ? 'Internal note. Only agents on this desk will see this.' : 'Public reply, saved to this ticket. Outbound email isn’t built yet — the reporter won’t be notified unless they check their SIL account.'}
                 </div>
                 <textarea
                   value={body}
@@ -278,7 +278,7 @@ export default function Ticket() {
                 />
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <div className="text-xs" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
-                    {isNote ? 'Not emailed to anyone.' : `Sends from the ${desk.name} address.`}
+                    {isNote ? 'Not emailed to anyone.' : 'Not emailed — reply via email directly if the reporter needs to be notified now.'}
                   </div>
                   <button
                     onClick={sendMessage}
