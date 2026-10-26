@@ -362,6 +362,12 @@ export default function AdminDashboard() {
                       >
                         {p.role === 'admin' ? 'Make agent' : 'Make desk admin'}
                       </button>
+                      <button
+                        onClick={() => setRole(p.profile_id, 'none')}
+                        className="min-h-[36px] px-3 border border-gray-300 rounded-lg text-sm text-gray-500 hover:border-red-400 hover:text-red-700"
+                      >
+                        Remove
+                      </button>
                     </div>
                   )
                 })}
