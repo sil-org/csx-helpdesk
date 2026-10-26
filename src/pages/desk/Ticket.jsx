@@ -29,6 +29,7 @@ export default function Ticket() {
   const [reassignName, setReassignName] = useState('')
   const [toast, setToast] = useState(null)
   const [draft, setDraft] = useState(null)
+  const [mergedIntoNumber, setMergedIntoNumber] = useState(null)
 
   useEffect(() => {
     if (!toast) return
@@ -43,12 +44,19 @@ export default function Ticket() {
 
   async function reload() {
     const { data: t, error: tErr } = await hd.from('tickets')
-      .select('*, requester:requesters(id, display_name, email), merged_into:tickets!tickets_merged_into_ticket_id_fkey(ticket_number)')
+      .select('*, requester:requesters(id, display_name, email)')
       .eq('ticket_number', ticketNumber)
       .maybeSingle()
     if (tErr) { setError(tErr.message); setTicket(null); return }
     setTicket(t ?? null)
     if (!t) return
+
+    if (t.merged_into_ticket_id) {
+      const { data: survivor } = await hd.from('tickets').select('ticket_number').eq('id', t.merged_into_ticket_id).maybeSingle()
+      setMergedIntoNumber(survivor?.ticket_number ?? null)
+    } else {
+      setMergedIntoNumber(null)
+    }
 
     const [{ data: msgs }, { data: parts }, { data: evts }, { data: fwdLinks }, { data: backLinks }] = await Promise.all([
       hd.from('ticket_messages').select('*').eq('ticket_id', t.id).order('created_at'),
@@ -197,9 +205,11 @@ export default function Ticket() {
           {ticket.merged_into_ticket_id && (
             <div className="bg-gray-100 border border-gray-300 rounded-xl p-4 text-sm text-gray-700">
               Merged into{' '}
-              <Link to={`/d/${slug}/t/${ticket.merged_into?.ticket_number}`} className="font-semibold text-brand hover:text-brand-dark">
-                #{ticket.merged_into?.ticket_number}
-              </Link>
+              {mergedIntoNumber ? (
+                <Link to={`/d/${slug}/t/${mergedIntoNumber}`} className="font-semibold text-brand hover:text-brand-dark">
+                  #{mergedIntoNumber}
+                </Link>
+              ) : 'another ticket'}
               . Everything here moved there — reply on that ticket instead.
             </div>
           )}
