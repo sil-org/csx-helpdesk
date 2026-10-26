@@ -152,6 +152,23 @@ test('routes by received_for alone when To has been rewritten and no list header
   assert.equal((calls.rpc[0] as { p: { desk_id: string } }).p.desk_id, 'desk-ghd')
 })
 
+test('a +tagged address on the same group routes to its own desk, not the group\'s base desk', async () => {
+  // Real-world case: one Google Group serves two desks by address
+  // (helpdesk@sil.org -> ghd, helpdesk+ema@sil.org -> eurasia). The group's
+  // own identity headers (List-Post, Mailing-list, List-Id) always name the
+  // bare address, so routing must prefer the tagged To/received_for over them.
+  const taggedDesks = new Map([['helpdesk@sil.org', 'desk-ghd'], ['helpdesk+ema@sil.org', 'desk-eurasia']])
+  const email = groupMail({
+    to: ['ingester@narabsaou.resend.app'],
+    received_for: ['ingester@narabsaou.resend.app', 'helpdesk+ema@sil.org'],
+    headers: { to: 'helpdesk+ema@sil.org' },
+  })
+  const { deps, calls } = makeDeps(email)
+  await processEmail(deps, 'em-1', taggedDesks)
+  assert.equal((calls.rpc[0] as { p: { desk_id: string; source_address: string } }).p.desk_id, 'desk-eurasia')
+  assert.equal((calls.rpc[0] as { p: { source_address: string } }).p.source_address, 'helpdesk+ema@sil.org')
+})
+
 test('a rewritten From ("Pat via Help Desk") still yields the real sender from X-Original-Sender', async () => {
   const email = groupMail({
     from: 'helpdesk@sil.org',

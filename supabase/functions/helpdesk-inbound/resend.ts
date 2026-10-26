@@ -209,12 +209,14 @@ export async function processEmail(deps: Deps, emailId: string, addressToDesk: M
     if (!bounceRecipient) return skip(auto)
   }
 
-  // Where it was sent: the group's own headers, then To/Cc, then Resend's
-  // received_for (which holds the original recipient even when the group has
-  // rewritten To to our receiving address).
-  const candidates = candidateAddresses(headers)
-  for (const a of [...(email.received_for ?? []), ...(email.to ?? []), ...(email.cc ?? [])]) {
-    const addr = parseAddress(a).email
+  // Where it was sent: Resend's received_for first (the original recipient,
+  // even when the group has rewritten To to our receiving address — and,
+  // confirmed on real mail, it preserves a "+tag" sub-address), then the
+  // header-derived candidates (envelope headers and To/Cc before the
+  // group's own untagged identity headers — see candidateAddresses).
+  const candidates = [...(email.received_for ?? []), ...(email.to ?? []), ...(email.cc ?? [])]
+    .map((a) => parseAddress(a).email)
+  for (const addr of candidateAddresses(headers)) {
     if (!candidates.includes(addr)) candidates.push(addr)
   }
   const route = routeDesk(candidates, addressToDesk, null)

@@ -50,16 +50,28 @@ export function parseAddressList(value: string): string[] {
     .filter((e) => /^[^@\s]+@[^@\s]+$/.test(e))
 }
 
-// Addresses a message might have been sent to, most reliable first. Mail
-// that arrives through a Google Group carries the group's own headers, so
-// those come first; then the envelope-ish headers; then To/Cc. (Confirmed on
-// real group mail: To and Mailing-list name the group; List-Id is the weakest.)
+// Addresses a message might have been sent to, most reliable first.
+//
+// Envelope-ish headers and To/Cc come first because they can carry a
+// "+tag" sub-address (e.g. helpdesk+ema@sil.org, letting one Google Group
+// route to several desks); List-Post/Mailing-list/List-Id name the group
+// itself, which is reliable for "which group" but blind to any tag — a
+// group's own identity headers are always the bare address, confirmed on
+// real group mail sent to a +tagged address (the to/received_for headers
+// kept the tag; List-Id did not). So those come last, as a fallback for
+// when nothing more specific matches.
 export function candidateAddresses(headers: Header[]): string[] {
   const found: string[] = []
   const add = (e: string | undefined) => {
     if (e && /^[^@\s]+@[^@\s]+$/.test(e) && !found.includes(e.toLowerCase())) found.push(e.toLowerCase())
   }
 
+  for (const name of ['X-Original-To', 'X-Forwarded-To', 'X-Envelope-To', 'Delivered-To', 'Resent-To']) {
+    for (const v of getHeaders(headers, name)) parseAddressList(v).forEach(add)
+  }
+  for (const name of ['To', 'Cc']) {
+    for (const v of getHeaders(headers, name)) parseAddressList(v).forEach(add)
+  }
   // List-Post: <mailto:group@domain>
   for (const v of getHeaders(headers, 'List-Post')) {
     const m = v.match(/mailto:([^>\s?]+)/i)
@@ -69,12 +81,6 @@ export function candidateAddresses(headers: Header[]): string[] {
   for (const v of getHeaders(headers, 'Mailing-list')) {
     const m = v.match(/list\s+([^\s;]+)/i)
     add(m?.[1])
-  }
-  for (const name of ['X-Original-To', 'X-Forwarded-To', 'X-Envelope-To', 'Delivered-To', 'Resent-To']) {
-    for (const v of getHeaders(headers, name)) parseAddressList(v).forEach(add)
-  }
-  for (const name of ['To', 'Cc']) {
-    for (const v of getHeaders(headers, name)) parseAddressList(v).forEach(add)
   }
   // Weakest signal: List-Id <group.domain.org> read as group@domain.org
   for (const v of getHeaders(headers, 'List-Id')) {

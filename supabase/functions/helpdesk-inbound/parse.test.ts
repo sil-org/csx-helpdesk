@@ -24,7 +24,7 @@ test('parseAddressList splits on commas outside quotes and brackets', () => {
   assert.deepEqual(parseAddressList('undisclosed-recipients:;'), [])
 })
 
-test('candidateAddresses puts group headers first and de-duplicates', () => {
+test('candidateAddresses puts envelope/To/Cc first (can carry a +tag) and de-duplicates, group identity headers last', () => {
   const c = candidateAddresses(h({
     'Delivered-To': 'helpdesk-inbound@sil.org',
     'List-Post': '<mailto:dallas-help@sil.org>',
@@ -32,7 +32,18 @@ test('candidateAddresses puts group headers first and de-duplicates', () => {
     'Cc': 'someone@x.org',
     'List-Id': '<dallas-help.sil.org>',
   }))
-  assert.deepEqual(c, ['dallas-help@sil.org', 'helpdesk-inbound@sil.org', 'someone@x.org'])
+  assert.deepEqual(c, ['helpdesk-inbound@sil.org', 'dallas-help@sil.org', 'someone@x.org'])
+})
+
+test('candidateAddresses prefers a +tagged To/Delivered-To over the group identity headers', () => {
+  const c = candidateAddresses(h({
+    'Delivered-To': 'helpdesk+ema@sil.org',
+    'To': 'helpdesk+ema@sil.org',
+    'List-Post': '<mailto:helpdesk@sil.org>',
+    'Mailing-list': 'list helpdesk@sil.org; contact helpdesk+owners@sil.org',
+    'List-Id': '<helpdesk.sil.org>',
+  }))
+  assert.equal(c[0], 'helpdesk+ema@sil.org')
 })
 
 test('candidateAddresses reads Mailing-list and falls back to List-Id', () => {
