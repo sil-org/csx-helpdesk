@@ -56,6 +56,22 @@ hasn't been set up either):
    pilot in step 9b)
 9. Do step 1b below (expose the schema, create the first super admin)
 
+**How to tell whether `schema.sql` has already been applied.** In the SQL
+Editor run this; a value in each column means yes (skip `schema.sql`), and
+`null` in the first column means no (run `schema.sql` once, first):
+
+```sql
+select
+  to_regclass('public.profiles')        as profiles_table,
+  to_regclass('public.linked_accounts') as linked_accounts_table,
+  to_regprocedure('public.resolve_profile(uuid,uuid,text,text)') as resolve_profile_function,
+  exists (select 1 from information_schema.schemata where schema_name = 'helpdesk') as helpdesk_schema_exists;
+```
+
+If `license-manager` sign-in already works on this project, `schema.sql` has
+been applied. `helpdesk_schema_exists` stays `false` until you run
+`schema_helpdesk.sql`.
+
 **Back up first.** Whichever case you're in, take a database backup (or work
 on a Supabase branch) before running anything against a project that
 `license-manager` is using.
@@ -129,7 +145,9 @@ $$;
 ### 1b. Expose the `helpdesk` schema and create the first super admin
 
 1. **Project Settings > API > Exposed schemas**: *add* `helpdesk` to the list
-   (keep `public`; this only appends, it doesn't affect license-manager)
+   (keep `public`; this only appends, it doesn't affect license-manager). The
+   schema only appears in that list **after** `schema_helpdesk.sql` has run, so
+   do this last
 2. Sign in to the app once with your SIL account so you have a profile, then
    in the SQL Editor:
 
