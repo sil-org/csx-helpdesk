@@ -41,9 +41,25 @@ export default function AdminDashboard() {
   }
 
   async function loadAddresses(deskId) {
-    const { data, error } = await hd.from('desk_addresses').select('address, status').eq('desk_id', deskId).order('created_at')
+    const { data, error } = await hd.from('desk_addresses')
+      .select('address, status, live_replies, is_default_reply').eq('desk_id', deskId).order('created_at')
     if (error) { setError(error.message); return }
     setAddresses(data ?? [])
+  }
+
+  async function setLiveReplies(address, live_replies) {
+    setError(null)
+    const { error } = await hd.from('desk_addresses').update({ live_replies }).eq('address', address)
+    if (error) setError(error.message); else loadAddresses(sel.id)
+  }
+
+  async function setDefaultReply(address) {
+    setError(null)
+    // Only one default per desk (desk_addresses_one_default_idx) — clear the
+    // old one first so the unique index doesn't reject the new one.
+    await hd.from('desk_addresses').update({ is_default_reply: false }).eq('desk_id', sel.id).eq('is_default_reply', true)
+    const { error } = await hd.from('desk_addresses').update({ is_default_reply: true }).eq('address', address)
+    if (error) setError(error.message); else loadAddresses(sel.id)
   }
 
   useEffect(() => {
@@ -281,16 +297,32 @@ export default function AdminDashboard() {
               <div className="text-xs text-gray-500 -mt-2">
                 Mail to any of these ingests into this desk. Each address can only belong to one desk. A new
                 address still needs adding to that address's Google Group (SETUP.md step 9c) before mail reaches it.
+                "Live replies" controls actual sending (shadow mode until it's on — see spec decision 18); "Default"
+                picks which address replies come from when a ticket's own source address isn't registered.
               </div>
               {addresses.map((a) => (
-                <div key={a.address} className="flex items-center justify-between gap-2 text-sm">
-                  <span>
-                    {a.address}
-                    <span className={`ml-2 text-xs font-semibold px-1.5 py-0.5 rounded-full ${a.status === 'receiving' ? 'bg-[#EDF5EA] text-[#38751C]' : 'bg-gray-100 text-gray-500'}`}>
-                      {a.status === 'receiving' ? 'receiving' : 'pending'}
+                <div key={a.address} className="flex flex-col gap-1.5 py-2 border-t border-gray-100 first:border-t-0 first:pt-0">
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <span>
+                      {a.address}
+                      <span className={`ml-2 text-xs font-semibold px-1.5 py-0.5 rounded-full ${a.status === 'receiving' ? 'bg-[#EDF5EA] text-[#38751C]' : 'bg-gray-100 text-gray-500'}`}>
+                        {a.status === 'receiving' ? 'receiving' : 'pending'}
+                      </span>
+                      {a.is_default_reply && (
+                        <span className="ml-2 text-xs font-semibold px-1.5 py-0.5 rounded-full bg-[#E5EEF8] text-gray-700">default</span>
+                      )}
                     </span>
-                  </span>
-                  <button onClick={() => removeAddress(a.address)} className="text-xs text-gray-500 hover:text-red-700">Remove</button>
+                    <button onClick={() => removeAddress(a.address)} className="text-xs text-gray-500 hover:text-red-700">Remove</button>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                      <input type="checkbox" checked={a.live_replies} onChange={(e) => setLiveReplies(a.address, e.target.checked)} className="w-4 h-4" />
+                      Live replies
+                    </label>
+                    {!a.is_default_reply && (
+                      <button onClick={() => setDefaultReply(a.address)} className="text-xs text-brand hover:text-brand-dark">Make default</button>
+                    )}
+                  </div>
                 </div>
               ))}
               <div className="flex gap-2">

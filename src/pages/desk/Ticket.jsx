@@ -5,6 +5,7 @@ import StatusPill from '../../components/StatusPill'
 import { useAuth } from '../../context/AuthContext'
 import { useHelpdesk } from '../../context/HelpdeskContext'
 import { hd, profilesByIds, relativeTime, STATUS_LABEL } from '../../lib/helpdesk'
+import { supabase } from '../../lib/supabase'
 
 export default function Ticket() {
   const { slug, ticketNumber } = useParams()
@@ -139,15 +140,30 @@ export default function Ticket() {
     if (!body.trim()) return
     setSending(true)
     setError(null)
-    const { error } = await hd.from('ticket_messages').insert({
+    const { data: inserted, error } = await hd.from('ticket_messages').insert({
       ticket_id: ticket.id,
       direction: 'outbound',
       internal: isNote,
       profile_id: profile.id,
       body,
-    })
+    }).select('id').single()
+    if (error) { setSending(false); setError(error.message); return }
+
+    // Internal notes are never emailed — only a public reply actually sends.
+    // The message is already saved either way; a send failure here is a
+    // soft failure (shown, not reverted) so an agent doesn't lose the text.
+    if (!isNote) {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-reply`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: inserted.id }),
+      })
+      const result = await res.json()
+      if (!res.ok) setError(`Saved, but not sent: ${result.error}`)
+    }
+
     setSending(false)
-    if (error) { setError(error.message); return }
     setBody('')
     // A public reply retires whatever draft was active, whether it was used
     // as-is, edited, or ignored entirely — either way it's no longer "the"
@@ -268,7 +284,7 @@ export default function Ticket() {
               </div>
               <div className="p-4 flex flex-col gap-3" style={{ background: isNote ? '#FFF8E8' : '#fff' }}>
                 <div className="text-sm font-bold" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
-                  {isNote ? 'Internal note. Only agents on this desk will see this.' : 'Public reply, saved to this ticket. Outbound email isn’t built yet — the reporter won’t be notified unless they check their SIL account.'}
+                  {isNote ? 'Internal note. Only agents on this desk will see this.' : 'Public reply. The reporter and CCs will receive this by email.'}
                 </div>
                 <textarea
                   value={body}
@@ -278,7 +294,7 @@ export default function Ticket() {
                 />
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <div className="text-xs" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
-                    {isNote ? 'Not emailed to anyone.' : 'Not emailed — reply via email directly if the reporter needs to be notified now.'}
+                    {isNote ? 'Not emailed to anyone.' : `Sends from the ${desk.name} address.`}
                   </div>
                   <button
                     onClick={sendMessage}
