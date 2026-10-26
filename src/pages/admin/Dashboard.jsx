@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useHelpdesk } from '../../context/HelpdeskContext'
 import { hd, profilesByIds, findProfileByEmail } from '../../lib/helpdesk'
@@ -149,6 +150,9 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <div className="flex flex-wrap items-center gap-4 px-6 py-3 bg-white border-b border-gray-200">
+        <Link to={agentDesks[0] ? `/d/${agentDesks[0].slug}` : '/dashboard'} className="text-sm font-semibold text-brand hover:text-brand-dark">
+          &larr; Back to queue
+        </Link>
         <div className="text-[17px] font-bold">SIL Help Desk &middot; Administration</div>
         <div className="flex-1" />
         <div className="text-sm text-gray-500">{profile?.display_name} &middot; <b className="text-gray-900">{isSuperAdmin ? 'Super admin' : 'Desk admin'}</b></div>
