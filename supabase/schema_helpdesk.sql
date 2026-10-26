@@ -172,6 +172,14 @@ create table if not exists helpdesk.tickets (
   updated_at timestamptz not null default now()
 );
 
+-- Reporter detection layer 1 (spec section 7): a best-effort guess at who a
+-- forward is really about, parsed from the quoted "From:" line at ingestion.
+-- Proposal only — never applied automatically; stays alongside requester_id
+-- (the confirmed reporter) as the agent's starting point for reassignment.
+alter table helpdesk.tickets add column if not exists detected_sender_name text;
+alter table helpdesk.tickets add column if not exists detected_sender_email text
+  check (detected_sender_email = lower(detected_sender_email));
+
 create index if not exists tickets_current_desk_id_idx on helpdesk.tickets(current_desk_id);
 create index if not exists tickets_status_idx on helpdesk.tickets(status);
 create index if not exists tickets_requester_id_idx on helpdesk.tickets(requester_id);
@@ -529,6 +537,40 @@ begin
 end;
 $$;
 
+-- ── RPC: manual reporter reassignment (spec section 7, layer 4) ──────────
+-- requester_id isn't in tickets' column grants (every other path to it is
+-- audited), so this is the only way to change it. Finds or creates the
+-- requester by email, marks the ticket verified at full confidence, and logs
+-- 'reporter_changed' via the existing tickets_audit trigger.
+
+create or replace function helpdesk.reassign_reporter(p_ticket_id uuid, p_email text, p_display_name text default null)
+returns void language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_email text := lower(trim(p_email));
+  v_requester uuid;
+begin
+  if not helpdesk.can_work_ticket(p_ticket_id) then
+    raise exception 'not allowed: must be able to work this ticket';
+  end if;
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'invalid email: %', p_email;
+  end if;
+
+  insert into helpdesk.requesters (email, display_name)
+  values (v_email, nullif(trim(p_display_name), ''))
+  on conflict (email) do update
+    set display_name = coalesce(excluded.display_name, helpdesk.requesters.display_name)
+  returning id into v_requester;
+
+  update helpdesk.tickets
+  set requester_id = v_requester, reporter_verified = true, reporter_confidence = 1.0
+  where id = p_ticket_id;
+end;
+$$;
+
+revoke all on function helpdesk.reassign_reporter(uuid, text, text) from public;
+grant execute on function helpdesk.reassign_reporter(uuid, text, text) to authenticated;
+
 -- ── RPC: record one inbound email (used by the helpdesk-ingest function) ─
 -- One transaction: dedupe, find/create requester, thread onto a ticket or
 -- open a new one, reopen on reply, store the message, mark the address as
@@ -536,7 +578,9 @@ $$;
 --
 -- p keys: mailbox, desk_id, source_address, gmail_message_id, gmail_thread_id,
 -- rfc_message_id, in_reply_to, references (array), from_email, from_name,
--- subject, body, headers (object), forwarded (bool)
+-- subject, body, headers (object), forwarded (bool), forwarded_sender_name,
+-- forwarded_sender_email, detected_sender_confidence (layer-1 guess — from a
+-- forward's header or a bounce's body — set only at ticket creation)
 -- (The gmail_* keys are historical names: helpdesk-inbound puts the Resend
 -- email id in gmail_message_id and leaves gmail_thread_id null.)
 
@@ -547,6 +591,8 @@ declare
   v_ext_id text := p->>'gmail_message_id';
   v_from text := lower(p->>'from_email');
   v_requester uuid;
+  v_detected_requester uuid;
+  v_confidence numeric(3, 2) := nullif(p->>'detected_sender_confidence', '')::numeric;
   v_ticket uuid;
   v_old_status helpdesk.ticket_status;
   v_forwarded_to text;
@@ -566,6 +612,24 @@ begin
   on conflict (email) do update
     set display_name = coalesce(helpdesk.requesters.display_name, excluded.display_name)
   returning id into v_requester;
+
+  -- A detected sender (parsed from a forward's header, or found in a bounce
+  -- body — spec section 7, layers 1 and the bounce-handling extension of it)
+  -- is always a better starting requester than the literal envelope sender
+  -- (a colleague who merely forwarded it, or a bounce's own mailer-daemon).
+  -- High confidence (a cleanly-parsed forward: 0.9) assigns it outright and
+  -- marks the reporter verified; lower confidence (a bounce's broader body
+  -- scan: 0.4) still uses it as requester_id but leaves reporter_verified
+  -- false, so an agent still sees the unverified-reporter confirm UI.
+  -- detected_sender_name/email on the ticket keep the original guess visible
+  -- either way, for an agent who wants to double-check it.
+  if p->>'forwarded_sender_email' is not null then
+    insert into helpdesk.requesters (email, display_name)
+    values (lower(p->>'forwarded_sender_email'), nullif(trim(p->>'forwarded_sender_name'), ''))
+    on conflict (email) do update
+      set display_name = coalesce(helpdesk.requesters.display_name, excluded.display_name)
+    returning id into v_detected_requester;
+  end if;
 
   -- Thread: Gmail thread in this mailbox first, then RFC In-Reply-To/References.
   select m.ticket_id into v_ticket
@@ -590,10 +654,17 @@ begin
   if v_ticket is null then
     insert into helpdesk.tickets
       (current_desk_id, subject, requester_id, sender_email, source_address,
-       reporter_verified, last_requester_reply_at)
+       reporter_verified, reporter_confidence, detected_sender_name, detected_sender_email,
+       last_requester_reply_at)
     values
-      ((p->>'desk_id')::uuid, p->>'subject', v_requester, v_from, lower(p->>'source_address'),
-       not coalesce((p->>'forwarded')::boolean, false), now())
+      ((p->>'desk_id')::uuid, p->>'subject', coalesce(v_detected_requester, v_requester), v_from,
+       lower(p->>'source_address'),
+       case when v_detected_requester is not null and v_confidence >= 0.8 then true
+            when v_detected_requester is not null then false
+            else not coalesce((p->>'forwarded')::boolean, false) end,
+       case when v_detected_requester is not null then coalesce(v_confidence, 0.5) else null end,
+       nullif(p->>'forwarded_sender_name', ''), lower(nullif(p->>'forwarded_sender_email', '')),
+       now())
     returning id into v_ticket;
     v_created := true;
   else

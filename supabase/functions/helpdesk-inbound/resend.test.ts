@@ -227,6 +227,38 @@ test('automatic replies are skipped; list mail (Precedence: list) is not', async
   assert.equal((await processEmail(ok.deps, 'em-1', desks)).status, 'ingested')
 })
 
+test('a bounce naming a real recipient still becomes a ticket, at lower confidence', async () => {
+  const { deps, calls } = makeDeps(groupMail({
+    from: 'MAILER-DAEMON@amazonses.com',
+    headers: {
+      from: 'Mail Delivery System <MAILER-DAEMON@amazonses.com>',
+      'content-type': 'multipart/report; report-type=delivery-status',
+      'x-original-sender': '',
+    },
+    text: 'An error occurred while trying to deliver the mail to marc_aarnoudse@sil.org:\n' +
+      'Remote host said: 550 5.1.1 unknown user\n\nMAILER-DAEMON@amazonses.com',
+  }))
+  const result = await processEmail(deps, 'em-1', desks)
+  assert.equal(result.status, 'ingested')
+  const p = (calls.rpc[0] as { p: Record<string, unknown> }).p
+  assert.equal(p.forwarded_sender_email, 'marc_aarnoudse@sil.org')
+  assert.equal(p.detected_sender_confidence, 0.4)
+})
+
+test('a bounce with no identifiable recipient is skipped as noise', async () => {
+  const { deps, calls } = makeDeps(groupMail({
+    from: 'MAILER-DAEMON@amazonses.com',
+    headers: {
+      from: 'Mail Delivery System <MAILER-DAEMON@amazonses.com>',
+      'content-type': 'multipart/report; report-type=delivery-status',
+      'x-original-sender': '',
+    },
+    text: 'This confirms your subscription request.\nMAILER-DAEMON@amazonses.com',
+  }))
+  assert.equal((await processEmail(deps, 'em-1', desks)).status, 'skipped')
+  assert.equal(calls.rpc.length, 0)
+})
+
 test('a duplicate delivery changes nothing', async () => {
   const { deps, calls } = makeDeps(groupMail(), { rpcResult: { status: 'duplicate', ticket_id: 't1', message_id: 'm1' } })
   assert.deepEqual(await processEmail(deps, 'em-1', desks), { status: 'duplicate' })
