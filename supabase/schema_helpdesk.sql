@@ -112,7 +112,10 @@ create table if not exists helpdesk.desk_addresses (
 create unique index if not exists desk_addresses_one_default_idx
   on helpdesk.desk_addresses(desk_id) where is_default_reply;
 
--- Mailboxes the poller reads. desk_id null = shared mailbox (route by address).
+-- NOT USED by the current ingestion (helpdesk-inbound receives mail from
+-- Resend; see SETUP.md step 9). Kept from the retired Gmail-polling design;
+-- safe to ignore or drop later.
+-- Mailboxes the poller read. desk_id null = shared mailbox (route by address).
 -- No credentials here: 'service_account' uses the HELPDESK_GOOGLE_SA_JSON
 -- secret; 'oauth' reads <secret_prefix>_CLIENT_ID / _CLIENT_SECRET /
 -- _REFRESH_TOKEN secrets. isolation_label, when set, restricts the poller to
@@ -534,6 +537,8 @@ $$;
 -- p keys: mailbox, desk_id, source_address, gmail_message_id, gmail_thread_id,
 -- rfc_message_id, in_reply_to, references (array), from_email, from_name,
 -- subject, body, headers (object), forwarded (bool)
+-- (The gmail_* keys are historical names: helpdesk-inbound puts the Resend
+-- email id in gmail_message_id and leaves gmail_thread_id null.)
 
 create or replace function helpdesk.ingest_inbound(p jsonb) returns jsonb
 language plpgsql security definer set search_path = helpdesk, public as $$

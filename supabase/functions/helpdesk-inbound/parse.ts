@@ -1,16 +1,9 @@
-// Pure parsing / routing helpers for helpdesk-ingest. No Deno or network APIs
+// Pure parsing / routing helpers for helpdesk-inbound. No Deno or network APIs
 // in here so they can be unit-tested with plain Node (see parse.test.ts).
 
 export interface Header {
   name: string
   value: string
-}
-
-export interface AttachmentRef {
-  filename: string
-  mimeType: string
-  size: number
-  attachmentId: string
 }
 
 export function getHeader(headers: Header[], name: string): string {
@@ -58,10 +51,9 @@ export function parseAddressList(value: string): string[] {
 }
 
 // Addresses a message might have been sent to, most reliable first. Mail
-// that arrives through a Google Group is delivered to the ingest mailbox, so
-// the group's own headers come first; then the envelope-ish headers; then
-// To/Cc. The exact header formats Google Groups uses still need confirming
-// on real mail (see docs/HELPDESK_SPEC.md section 6).
+// that arrives through a Google Group carries the group's own headers, so
+// those come first; then the envelope-ish headers; then To/Cc. (Confirmed on
+// real group mail: To and Mailing-list name the group; List-Id is the weakest.)
 export function candidateAddresses(headers: Header[]): string[] {
   const found: string[] = []
   const add = (e: string | undefined) => {
@@ -144,86 +136,61 @@ export function looksForwarded(subject: string, body: string): boolean {
   return /-{3,}\s*forwarded message\s*-{3,}|begin forwarded message:/i.test(body)
 }
 
-// Remove the footer Google Groups appends to every delivered message.
+// Remove the footer Google Groups appends to every delivered message. Seen
+// in two forms: the long "You received this message because you are
+// subscribed to..." and the short "To unsubscribe from this group and stop
+// receiving emails from it, send an email to x+unsubscribe@..." on its own.
 export function stripGroupFooter(body: string): string {
-  const m = body.match(/\n[-_ ]*\n?You received this message because you are subscribed to/i)
-  if (m && m.index !== undefined) {
-    const tail = body.slice(m.index)
-    if (/unsubscribe/i.test(tail.slice(0, 800))) return body.slice(0, m.index).trimEnd()
+  const long = body.match(/\n[-_ ]*\n?You received this message because you are subscribed to/i)
+  if (long && long.index !== undefined) {
+    const tail = body.slice(long.index)
+    if (/unsubscribe/i.test(tail.slice(0, 800))) return body.slice(0, long.index).trimEnd()
   }
+  const short = body.match(/\n+To unsubscribe from this group and stop receiving emails from it, send an email to \S+\.?\s*$/i)
+  if (short && short.index !== undefined) return body.slice(0, short.index).trimEnd()
   return body
+}
+
+// Cut the quoted earlier messages off a reply so the ticket thread shows only
+// what the sender just wrote. Conservative on purpose: only well-known
+// markers, and only when something was written above them (a message that
+// is nothing but a quote, such as a forward, is kept whole).
+const QUOTE_MARKERS: RegExp[] = [
+  /^#{2}-+\s*please enter your reply above this line\s*-+#{2}\s*$/im, // YouTrack and similar
+  /^On\b[^\n]{0,300}(\n[^\n]{0,200})?\bwrote:\s*$/m, // Gmail, Apple Mail: "On <date> <name> wrote:"
+  /^-{2,}\s*original message\s*-{2,}\s*$/im, // Outlook
+  /^From:[^\n]*\n(Sent|Date):[^\n]*\n(To|Cc|Subject):/m, // Outlook header block
+  /^_{20,}\s*$/m, // Outlook divider
+]
+export function stripQuotedReply(body: string): string {
+  let cut = -1
+  for (const re of QUOTE_MARKERS) {
+    const m = re.exec(body)
+    if (m && (cut === -1 || m.index < cut)) cut = m.index
+  }
+  if (cut <= 0) return body
+  const above = body.slice(0, cut).trimEnd()
+  return above.replace(/\s/g, '') === '' ? body : above
 }
 
 export function parseReferences(value: string): string[] {
   return (value.match(/<[^<>\s]+>/g) ?? []).map((s) => s.trim())
 }
 
-// ── MIME payload helpers ─────────────────────────────────────────────────
-
-export interface Payload {
-  mimeType?: string
-  filename?: string
-  headers?: Header[]
-  body?: { data?: string; attachmentId?: string; size?: number }
-  parts?: Payload[]
-}
-
-export function decodeBase64Url(data: string): string {
-  const bytes = decodeBase64UrlBytes(data)
-  return new TextDecoder().decode(bytes)
-}
-
-export function decodeBase64UrlBytes(data: string): Uint8Array {
-  const base64 = data.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4)
-  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0))
-}
-
-function findPart(payload: Payload, mimeType: string): Payload | null {
-  if (payload.mimeType === mimeType && payload.body?.data && !payload.filename) return payload
-  for (const part of payload.parts ?? []) {
-    const found = findPart(part, mimeType)
-    if (found) return found
-  }
-  return null
-}
-
-export function extractBody(payload: Payload): string {
-  const plain = findPart(payload, 'text/plain')
-  if (plain?.body?.data) return decodeBase64Url(plain.body.data)
-  const html = findPart(payload, 'text/html')
-  if (html?.body?.data) {
-    return decodeBase64Url(html.body.data)
-      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<br\s*\/?>|<\/p>|<\/div>/gi, '\n')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/ ?\n ?/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-  }
-  return ''
-}
-
-export function listAttachments(payload: Payload): AttachmentRef[] {
-  const out: AttachmentRef[] = []
-  const walk = (p: Payload) => {
-    if (p.filename && p.body?.attachmentId) {
-      out.push({
-        filename: p.filename,
-        mimeType: p.mimeType ?? 'application/octet-stream',
-        size: p.body.size ?? 0,
-        attachmentId: p.body.attachmentId,
-      })
-    }
-    for (const part of p.parts ?? []) walk(part)
-  }
-  walk(payload)
-  return out
+// Plain-text rendering of an HTML body, for the rare message with no text part.
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\s*\/?>|<\/p>|<\/div>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 // Safe storage-path segment from an untrusted filename.

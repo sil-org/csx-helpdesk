@@ -33,8 +33,8 @@ is already provisioned):
    license-manager's setup, and re-running it will error on
    `policy already exists` (the table/function statements are idempotent,
    but the `create policy` statements aren't).
-4. Run `supabase/seed_pilot_desk.sql` (optional: only needed for the BTC
-   pilot in step 9b)
+4. Run `supabase/seed_pilot_desk.sql` (creates the pilot Global IT Help Desk
+   with the address helpdesk@sil.org; needed for step 9)
 5. Do step 1b below (expose the schema, create the first super admin)
 
 **If the shared project doesn't exist yet** (starting fresh, license-manager
@@ -52,8 +52,8 @@ hasn't been set up either):
 6. New query, paste `supabase/schema_helpdesk.sql`, run it
 7. Also run `license-manager`'s `supabase/schema_licenses.sql` against this
    same project (see that repo's `SETUP.md`)
-8. Run `supabase/seed_pilot_desk.sql` (optional: only needed for the BTC
-   pilot in step 9b)
+8. Run `supabase/seed_pilot_desk.sql` (creates the pilot Global IT Help Desk
+   with the address helpdesk@sil.org; needed for step 9)
 9. Do step 1b below (expose the schema, create the first super admin)
 
 **How to tell whether `schema.sql` has already been applied.** In the SQL
@@ -263,7 +263,7 @@ git push -u origin main
 ```
 
 The GitHub Action deploys to S3 + invalidates CloudFront, and deploys the
-edge functions (`embed-document`, `helpdesk-ingest`), automatically.
+edge functions (`embed-document`, `helpdesk-inbound`), automatically.
 
 ---
 
@@ -306,163 +306,105 @@ The function refuses to call Voyage AI until that flag is `true`.
 
 ---
 
-## 9. Email ingestion
+## 9. Email ingestion (Resend)
 
-`helpdesk-ingest` (an edge function) polls the mailboxes listed in
-`helpdesk.desk_mailboxes` once a minute and turns inbound mail into tickets.
-Design and reasoning: `docs/HELPDESK_SPEC.md` section 6.
+`helpdesk-inbound` (an edge function) receives Resend's `email.received`
+webhook and turns each email into a ticket. Design and reasoning:
+`docs/HELPDESK_SPEC.md` section 6.
 
-**What this phase does:** receives mail, routes it to a desk by address,
-creates or threads tickets, stores attachments, skips automatic replies, parks
-mail that matches no desk. **What it doesn't do yet:** send any email
-(replies, acknowledgements), detect the real reporter on a forward (it only
+**How mail gets in.** People keep writing to the usual `@sil.org` desk
+addresses; nobody ever sees a Resend address. Each desk address is a Google
+Group, and the group also delivers a copy to a Resend receiving address (a
+hidden group member, the same way YouTrack receives it). Resend stores the
+message and calls the function, which fetches the full email, finds the desk,
+creates or threads the ticket, stores attachments, skips automatic replies
+and parks mail that matches no desk. The Resend address is verified to work
+with a Google Group: the original recipient comes through in `received_for`,
+the true sender in `X-Original-Sender`, and `In-Reply-To`/`References` are
+preserved.
+
+**What this phase does not do yet:** send any email (replies,
+acknowledgements; those will go out from `@em.sil.org` with Reply-To set to the
+desk's `@sil.org` address), detect the real reporter on a forward (it only
 flags forwards as "reporter unverified"), or scan attachments for viruses.
 
-### 9a. sil.org: ingest mailbox with OAuth (production path)
+### 9a. Resend
 
-Reads exactly one mailbox, `helpdesk-ingest@sil.org`, using a refresh token
-you get by signing in as that mailbox once. The token can only ever read and
-label that one mailbox. (A service account with domain-wide delegation can act
-as *any* user in the domain, which is far more than one mailbox needs; it is
-described in 9d as an option for later.)
+1. **Receiving address.** Resend dashboard > **Emails > Receiving**: use the
+   managed address (`something@<id>.resend.app`). One address is enough: add
+   it to every desk's group. (A custom receiving subdomain such as
+   `in.sil.org` is optional later; it needs an MX record. Never point the MX
+   of `sil.org` itself at Resend.)
+2. **API key.** **API Keys > Create**, name `helpdesk-inbound`. The function
+   only reads received mail. If Resend offers a read-only or receiving-only
+   scope, choose it; otherwise Full access. Outbound sending will get its own
+   key later (Sending access, limited to em.sil.org).
+3. **Webhook.** **Webhooks > Add endpoint**:
+   URL `https://YOUR_PROJECT_REF.supabase.co/functions/v1/helpdesk-inbound`,
+   event **`email.received`** only. Copy the endpoint's **signing secret**
+   (`whsec_...`). Use the exact https URL (a redirect makes Resend retry
+   forever, since it does not follow redirects).
+4. **Check plan and limits** in Resend (maximum received message size, how long
+   received mail is kept, monthly receiving volume and price) before sending
+   real traffic through it.
 
-Needs a Google Workspace admin (to create the mailbox) and access to SIL's
-Google Cloud organization.
+### 9b. Supabase secrets and deploy
 
-1. **Create the ingest mailbox**, e.g. `helpdesk-ingest@sil.org`, a
-   non-human user nobody reads mail in. It has no Staff Identity account, so it
-   signs in with a plain Google login: set up Google 2-step verification on it,
-   because you will sign in as it once in step 5.
-2. **Google Cloud Console:** create a dedicated project inside SIL's Cloud
-   organization (e.g. `sil-helpdesk`), owned by an admin account or group and
-   not by a personal account. **APIs & Services > Library** > enable the
-   **Gmail API**.
-3. **OAuth consent screen:** user type **Internal** (limits sign-in to your
-   Workspace, needs no Google verification, and its refresh tokens don't
-   expire after 7 days). Add the scope
-   `https://www.googleapis.com/auth/gmail.modify` (read, label, archive). When
-   reply-sending is built it will also need `gmail.send`, and you will repeat
-   step 5 to get a new token.
-4. **Credentials > Create credentials > OAuth client ID**, type **Web
-   application**, with the redirect URI exactly
-   `https://developers.google.com/oauthplayground`. Copy the Client ID and
-   Client Secret.
-5. **Get a refresh token** exactly as in 9b step 3, but **signed in as
-   `helpdesk-ingest@sil.org`**. Treat the token like a password.
-6. Secrets:
+```bash
+supabase secrets set RESEND_API_KEY=re_... RESEND_WEBHOOK_SECRET=whsec_...
+# optional: lets you re-process one stored email by hand (see 9d); leave unset to disable
+supabase secrets set HELPDESK_REPROCESS_SECRET="$(openssl rand -hex 32)"
+```
 
-   ```bash
-   supabase secrets set HELPDESK_INGEST_CLIENT_ID=... HELPDESK_INGEST_CLIENT_SECRET=... HELPDESK_INGEST_REFRESH_TOKEN=...
-   supabase secrets set HELPDESK_CRON_SECRET="$(openssl rand -hex 32)"
-   ```
+(Or Dashboard > Edge Functions > Secrets.) Deploy with
+`supabase functions deploy helpdesk-inbound --no-verify-jwt`; the GitHub
+Action does this on push to `main`. The function checks Resend's signature
+itself and refuses to run without `RESEND_WEBHOOK_SECRET`, which is what stops
+anyone on the internet from posting fake mail to it.
 
-7. **Register the mailbox and each desk's addresses** (SQL editor):
+### 9c. Connect a desk address (parallel run first)
 
-   ```sql
-   insert into helpdesk.desk_mailboxes (mailbox, auth_type, secret_prefix)
-   values ('helpdesk-ingest@sil.org', 'oauth', 'HELPDESK_INGEST');   -- shared: desk_id null
+1. Make sure the desk and its address exist: `supabase/seed_pilot_desk.sql`
+   creates the Global IT Help Desk (pilot) with `helpdesk@sil.org`. For more
+   desks: `insert into helpdesk.desk_addresses (address, desk_id) select 'dallas-help@sil.org', id from helpdesk.desks where slug = 'dallas';`
+2. Admin console > Groups > the desk's group > add the Resend receiving
+   address as a member. YouTrack keeps receiving everything.
+3. Send a test email to the desk address from an outside account, then check
+   `select * from helpdesk.tickets order by created_at desc limit 5;` and
+   `select * from helpdesk.ingest_log order by created_at desc limit 10;`
+   (`ingested`, `skipped`, `unrouted` and `error` rows; the newest row is the
+   "is it alive?" heartbeat).
+4. **First attachment test.** Send one with a small attachment and confirm a
+   `helpdesk.ticket_attachments` row has a `storage_path`. The attachment
+   download call is written from Resend's response shape but has not been run
+   against a real attachment; if the row shows `skipped_reason = 'could not
+   store: ...'`, send that message to whoever maintains this.
+5. **Cutover (later, per address).** Moving an address off its group to a
+   plain alias needs a Workspace routing rule delivering a copy to the Resend
+   address; do that deliberately per address, not in bulk.
 
-   insert into helpdesk.desk_addresses (address, desk_id)
-   select 'dallas-help@sil.org', id from helpdesk.desks where slug = 'dallas';
-   ```
+### 9d. Triage and re-processing
 
-8. **Get mail into the ingest mailbox** (per address, see spec section 6):
-   - *Parallel run with YouTrack:* add the ingest mailbox as another member of
-     the desk's Google Group. YouTrack keeps receiving everything.
-   - *Cutover:* move the address from the group to an alias on the ingest
-     mailbox (an address can't be both). YouTrack stops receiving it at that
-     point.
+- Mail matching no desk address is not lost: it has an `ingest_log` row with
+  `outcome = 'unrouted'` (and stays in Resend). After adding the missing
+  address to `desk_addresses`, re-process it with the `email_id`
+  (the id on the Resend Receiving page, or in the log row's
+  `gmail_message_id` column):
 
-   Mail delivered through a group is routed by the group's own headers
-   (`List-Post`, `Mailing-list`, `List-Id`). Those formats are handled from
-   documentation, not yet confirmed on real mail: check the first real
-   message with `select * from helpdesk.ingest_log` / `tickets` and tell
-   whoever is maintaining this if routing misses.
+  ```bash
+  curl -X POST https://YOUR_PROJECT_REF.supabase.co/functions/v1/helpdesk-inbound \
+    -H "x-helpdesk-secret: $HELPDESK_REPROCESS_SECRET" -H "Content-Type: application/json" \
+    -d '{"email_id": "THE-EMAIL-ID"}'
+  ```
 
-**If it stops working:** a refresh token can stop working if the mailbox's
-password is changed (Google can revoke tokens that carry Gmail scopes after a
-password change; confirm this for your setup), the account is suspended, or
-the consent is revoked. The poller records the error on `helpdesk.ingest_runs`
-(`error` column); fix it by repeating step 5 and updating the
-`HELPDESK_INGEST_REFRESH_TOKEN` secret.
-
-### 9b. BTC conference pilot (OAuth, different Workspace domain)
-
-For testing before sil.org mailboxes exist. `helpdesk-test@btconference.org`
-is an alias on `info@btconference.org`, which also holds real conference
-mail, so the poller is restricted to messages carrying the Gmail label
-`HelpdeskPilot` (set by a Gmail filter): it can never see anything else.
-
-1. **Admin console:** add `helpdesk-test@btconference.org` as an alias on the
-   `info@btconference.org` account.
-2. **Gmail (as info@btconference.org):** create the label `HelpdeskPilot`, and
-   a filter *To: helpdesk-test@btconference.org -> Apply the label
-   `HelpdeskPilot`* (optionally "Skip the Inbox").
-3. **Get a refresh token** (3-legged OAuth, not delegation): in Google Cloud
-   enable the Gmail API, **Credentials > Create credentials > OAuth client ID**,
-   type **Web application**, redirect URI exactly
-   `https://developers.google.com/oauthplayground`. In the
-   [OAuth Playground](https://developers.google.com/oauthplayground): gear icon
-   > "Use your own OAuth credentials", Access type **Offline**, Force prompt
-   **Consent Screen**; authorize `https://www.googleapis.com/auth/gmail.modify`
-   **signed in as info@btconference.org**; exchange the code and copy the
-   refresh token (treat it like a password).
-4. Secrets:
-
-   ```bash
-   supabase secrets set HELPDESK_BTC_CLIENT_ID=... HELPDESK_BTC_CLIENT_SECRET=... HELPDESK_BTC_REFRESH_TOKEN=...
-   supabase secrets set HELPDESK_CRON_SECRET="$(openssl rand -hex 32)"   # once, if not set in 9a
-   ```
-
-5. Run `supabase/seed_pilot_desk.sql` (creates the pilot desk, its address and
-   the mailbox row with `secret_prefix = 'HELPDESK_BTC'` and the isolation label).
-
-### 9c. Deploy, test, schedule
-
-1. Deploy: `supabase functions deploy helpdesk-ingest --no-verify-jwt`
-   (the GitHub Action does this on push to `main`). The function refuses to
-   run unless `HELPDESK_CRON_SECRET` is set and sent as `x-helpdesk-secret`,
-   which is what stops anyone on the internet from triggering it.
-2. Send a test email to a desk address, then poll once by hand:
-
-   ```bash
-   curl -X POST https://YOUR_PROJECT_REF.supabase.co/functions/v1/helpdesk-ingest \
-     -H "x-helpdesk-secret: $HELPDESK_CRON_SECRET" -H "Content-Type: application/json" -d '{}'
-   ```
-
-   Then check `helpdesk.tickets` and `helpdesk.ingest_runs` (the last poll per
-   mailbox, with counts and any error: this is the "is it alive?" heartbeat).
-3. **Schedule it:** `supabase/schedule_helpdesk_ingest.sql` (pg_cron + pg_net;
-   a template, replace the project ref).
-4. **Triage:** mail matching no desk address is parked, not lost: it keeps the
-   Gmail label `HelpdeskUnrouted` and a row in `helpdesk.ingest_log`
-   (`outcome = 'unrouted'`). After adding the missing address in
-   `desk_addresses`, re-route with body `{"retry_unrouted": true}`. Messages
-   that fail three times are labelled `HelpdeskFailed` and stay in
-   `ingest_log` with the error.
-
-### 9d. Optional: service account with domain-wide delegation
-
-Not needed for a single ingest mailbox. Consider it only if desks later get
-their own mailboxes and you want one credential for all of them. **Know what
-this grants:** delegation lets the service account act as *any* user in the
-domain for the scopes granted; only our code limits it to the mailboxes in
-`desk_mailboxes`. Google cannot restrict it to one account.
-
-1. In the Cloud project, **IAM & Admin > Service Accounts** > create one. Note
-   its **Unique ID**.
-2. **Admin console > Security > Access and data control > API controls >
-   Manage Domain Wide Delegation > Add new**: Client ID = the Unique ID,
-   scope = `https://www.googleapis.com/auth/gmail.modify` (and `gmail.send`
-   once sending is built).
-3. Create a JSON key (if your organization blocks key creation, that is a
-   policy decision for whoever owns the Cloud organization), then
-   `supabase secrets set HELPDESK_GOOGLE_SA_JSON="$(cat key.json)"`. Keep it in
-   Supabase secrets only, never in the repo.
-4. Register a mailbox with `auth_type = 'service_account'` instead of
-   `'oauth'` (no `secret_prefix` needed).
+- A failure (Supabase down, bad key) returns an error to Resend, which retries
+  the webhook automatically; the failed attempt is an `error` row in
+  `ingest_log`. A message delivered twice is ignored the second time.
+- If real mail stops appearing: Resend dashboard > Webhooks > the endpoint's
+  event log shows delivery attempts and the response each got.
 
 ### Tests
 
-`npm run test:ingest` runs the function's unit tests (Node 22+). The database
-access-rule tests are SQL; see `supabase/tests/README.md`.
+`npm run test:inbound` runs the function's unit tests (Node 22+), including
+the real group-delivered mail shape. The database access-rule tests are SQL;
+see `supabase/tests/README.md`.

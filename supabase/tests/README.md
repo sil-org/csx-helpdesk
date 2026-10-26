@@ -21,5 +21,5 @@ psql -v ON_ERROR_STOP=1 -d hd_test -f supabase/tests/helpdesk_rls.test.sql   # p
 Any failing check raises `FAIL: <name>` and the script stops.
 
 What these tests do **not** cover: the real Supabase API layer (PostgREST,
-exposed schemas, storage), the real Gmail API, or `pg_cron`. Those need a
+exposed schemas, storage), the Resend API, or the deployed edge function. Those need a
 live project.

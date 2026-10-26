@@ -18,14 +18,14 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 8 | Desk admins can promote agents on their own desk to desk admin. Logged; a desk always keeps at least one admin. |
 | 9 | An agent can work on several desks, with a desk switcher. |
 | 10 | CCs get email only; no app access. |
-| 11 | Ingestion: one dedicated ingest mailbox read with an OAuth refresh token (consent screen Internal), so access is limited to that one mailbox. A service account with domain-wide delegation stays an option for later multi-mailbox use. Parallel run with YouTrack first; alias cutover per desk later. |
+| 11 | Ingestion uses Resend inbound (revised from a Gmail-polled ingest mailbox; tested on real group-delivered mail). People keep writing to their usual @sil.org desk addresses; a Resend receiving address is a hidden member of each desk's Google Group and Resend's `email.received` webhook creates the ticket. No Google Cloud project, OAuth token or delegation is needed. Parallel run with YouTrack first; per-address cutover later. |
 | 12 | Each desk can have several addresses, and optionally its own mailbox. |
 | 13 | AI drafts are generated automatically on every new ticket and on every new requester reply (cached), draft-only in v1. |
 | 14 | Shared RAG corpus across all desks; each desk may opt out of contributing. |
 | 15 | Default theme is SIL brand (SIL Blue `#005CB9`). Playfair for titles, Source Sans 3 for UI. Per-desk logo and optional color override. |
 | 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
 | 17 | Deleted tickets are purged, and all ticket attachments and media are removed, after a configurable retention period, default 60 days. |
-| 18 | The parallel run with YouTrack is per address: lesser-used addresses move from their Google Group to an alias on the ingest mailbox and run live in the app (replies enabled); busy addresses stay on their groups and YouTrack until cutover. |
+| 18 | The parallel run with YouTrack is per address: an address runs in shadow mode (the Resend address is just another group member; the app reads and drafts but sends nothing, `live_replies` off) until a desk trusts it, then `live_replies` is turned on for that address. Outbound replies go from `@em.sil.org` (already verified on Resend) with Reply-To set to the desk's @sil.org address. |
 | 19 | The Google Doc knowledge base is the corpus and stays the single source of truth. A one-click rating on resolve (Covered / Wrong or out of date / Missing) and a nightly digest produce proposals, deduplicated so repeated issues don't each create an entry. A desk admin approves each proposal, and only then does the app edit the Doc. |
 
 ## 2. Architecture
@@ -59,8 +59,8 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 ## 4. Data model (changes to `schema_helpdesk.sql`)
 
 - `desks`: add `logo_url`, theme columns (primary and accent, nullable, default means SIL theme), `accepts_transfers boolean default false`.
-- `desk_addresses(address, desk_id, can_send_from, is_default_reply, live_replies)`: several addresses per desk. `live_replies` is per address and defaults to false; it is turned on when the address is moved to an alias on the ingest mailbox. Addresses still on a group are either not ingested or ingested in shadow mode (read and draft, no replies).
-- `desk_mailboxes(mailbox, desk_id, auth_type, secret_prefix, isolation_label, enabled)`: which mailbox feeds which desk (`desk_id` null = shared mailbox routed by address). `auth_type` is `service_account` or `oauth` (outside domains; secrets named `<secret_prefix>_CLIENT_ID` etc.). `isolation_label`, when set, limits the poller to messages carrying that Gmail label, for mailboxes that also hold real mail. No credentials are stored in the database.
+- `desk_addresses(address, desk_id, can_send_from, is_default_reply, live_replies)`: several addresses per desk. `live_replies` is per address and defaults to false; it is turned on when a desk is ready to answer from the app. Until then the address is ingested in shadow mode (read and draft, no replies).
+- `desk_mailboxes`: left over from the retired Gmail-polling design; unused by Resend ingestion and safe to drop later. No credentials are stored in the database either way.
 - `requesters`: add `profile_id` (nullable), linked on sign-in by email match or manually by an agent.
 - `tickets`: rename status `solved` to `resolved`; add `new`, `deleted`; add `assignee_profile_id`, `deleted_at`, `sensitive boolean`, `detected_reporter_confidence`, `reporter_verified boolean`, `forwarded_to`, `source_address`.
 - `ticket_participants(ticket_id, email, type)`: CCs and agent followers.
@@ -79,30 +79,32 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 
 ## 6. Email ingestion
 
-**Mailbox and auth.** One dedicated, non-human ingest mailbox (for example `helpdesk-ingest@sil.org`) read with an OAuth refresh token obtained by signing in once as that mailbox, in a dedicated Google Cloud project inside SIL's organization with the consent screen set to Internal. Scope: `gmail.modify` now, plus `gmail.send` when sending is built (a new token is needed then). The token lives in Supabase secrets only and can only ever read that one mailbox.
+**Decision and why.** Inbound mail arrives through Resend (SIL already runs it: `em.sil.org` is verified and webhooks are used in another project), not a Gmail mailbox that we poll. That removes the Google Cloud project, the OAuth consent and refresh token (which can break on a password change), the ingest mailbox and the polling schedule. Senders are unaffected: they keep writing to `helpdesk@sil.org` and the other desk addresses.
 
-- Why not domain-wide delegation: it lets a service account act as any user in the domain for the granted scopes, and Google cannot limit it to one mailbox; only our code would. It remains supported (`auth_type = 'service_account'`) if desks later get their own mailboxes and one credential for all of them is wanted. If used, the key lives in Supabase secrets only and the scope list stays minimal.
-- The token can stop working if the ingest mailbox's password changes, the account is suspended or consent is revoked; the error is recorded on `ingest_runs` and the fix is to repeat the one-time consent.
-- The BTC pilot stays on its OAuth token until sil.org is ready (different Workspace domain).
+**Path.** Each desk address is a Google Group (YouTrack is already a member). A Resend receiving address (`something@<id>.resend.app`) is added as one more member. When the group delivers a copy, Resend stores it and calls the `helpdesk-inbound` edge function with an `email.received` webhook (signed with Svix; the function verifies the signature). The webhook carries only metadata; the function fetches the full email (`GET /emails/receiving/:id`: headers, text, html, attachment list), then routes and ingests it.
 
-**Parallel run (first).** Existing desks use Google Groups with YouTrack as a subscriber. Add the ingest mailbox as another member of one test desk's group. YouTrack keeps working untouched.
+**Verified on real mail (two test messages through the live helpdesk@ group):**
+- `received_for` lists the original recipient (`helpdesk@sil.org`) even though the group rewrites the envelope `to` to the Resend address. The headers also keep `To`, `Mailing-list`, and the list object (post address, `List-Id`).
+- `X-Original-Sender` carries the real sender; `From` is not rewritten for senders whose DMARC policy allows it (for strict-DMARC senders Google rewrites it, so the app reads `X-Original-Sender`).
+- `In-Reply-To` and `References` are preserved, so replies thread.
+- Body arrives as `text` and `html`, including the quoted history and the group footer ("To unsubscribe from this group..."), both stripped before storing.
+- Resend's own `authentication` block (`dmarc: fail`) judges the group's re-sent copy and must not be used. Use `X-Original-Authentication-Results` (Google's verdict before the group) for reporter verification.
+- Repeated headers arrive as JSON-array strings and the group's `List-*` headers as one JSON object; `normalizeHeaders` expands both.
 
-- Group delivery means `deliveredto:` filters won't match. Route by group headers (`List-Id` / `X-Google-Group-Id`), falling back to recipient addresses, through `desk_addresses`.
-- Strip group footers and subject prefixes before storing text.
-- **Parallel run is per address.** Move lesser-used addresses off their group and onto the ingest mailbox as aliases; they run live in the app (plain "send as", `live_replies` on). Busy addresses stay on their groups and YouTrack, either not ingested or ingested in shadow mode (the app reads and drafts but does not send). This avoids needing to test sending as a group.
-- Moving an address stops YouTrack receiving it. Replies to older YouTrack conversations on that address become new tickets in the app, so move addresses at quiet times or let open YouTrack tickets finish first. A desk can have live and not-yet-moved addresses at the same time.
+**Not yet verified:** the attachment-content download call, Resend's message size limit, retention and plan/price for receiving, delivery from groups that restrict external senders, and a second group's headers (a single Resend address serves every desk, routed by `received_for`).
 
-**Cutover (later, per desk).** When a desk trusts the app, move its address from the group to an alias on the ingest mailbox. YouTrack stops receiving mail at that point. Aliases make `deliveredto:` filters and "send as" straightforward. An address cannot be both a group and an alias.
-
-**Processing.**
-- Poll every minute via `pg_cron` calling the `helpdesk-ingest` edge function, which requires the shared secret in `HELPDESK_CRON_SECRET` (the deploy uses `--no-verify-jwt`, so the secret is what keeps the endpoint from being public). Pub/Sub push can come later if latency matters.
-- A dedicated ingest mailbox is read from its inbox and routed by recipient or group headers matched against `desk_addresses`; no per-desk Gmail filters are needed. A mailbox that also holds real mail (the BTC pilot) is read only through its `isolation_label`. Mail matching no desk is parked with the label `HelpdeskUnrouted` and a row in `ingest_log` for the super admin, and is re-routed after the address is added. A message that fails three times is parked as `HelpdeskFailed`.
-- Threading by `In-Reply-To`/`References`, with Gmail thread ID as fallback.
-- **Loop protection (must-have):** ignore `Auto-Submitted`, out-of-office replies and bounce messages; never auto-reply to unknown or automated senders.
-- Attachments stored in Supabase Storage with size limits and scanning.
+**Processing (`supabase/functions/helpdesk-inbound/`).**
+- The deploy uses `--no-verify-jwt`, so authentication is ours: the Svix signature against `RESEND_WEBHOOK_SECRET` (the function refuses to run without it). One stored email can be re-processed by hand with `HELPDESK_REPROCESS_SECRET`.
+- Sender = `X-Original-Sender`, else `From`. Desk = first of: group headers, `To`/`Cc`, `received_for`, matched against `desk_addresses`. Mail matching no desk gets an `ingest_log` row (`unrouted`) for the super admin and is re-processed after the address is added.
+- Failures return an error so Resend retries the webhook; the Resend email id is the dedupe key, so duplicates are harmless.
+- Threading by `In-Reply-To`/`References`. Replies have quoted history stripped (known markers only, and only when something was written above them); forwards are kept whole and flagged.
+- **Loop protection (must-have):** ignore `Auto-Submitted`, out-of-office replies and bounce messages, and mail from our own desk addresses; never auto-reply to unknown or automated senders.
+- Attachments stored in Supabase Storage with size limits (scanning later); an attachment that can't be stored is recorded with the reason, never dropped silently.
 - Basic spam flagging, since anyone can email in.
-- Replies are sent from the address the ticket arrived on. A desk can never send from another desk's address.
-- A desk address first shows "pending" in admin, then "receiving mail" after the first message arrives. Only a Workspace admin creates the alias or group membership; desk admins only record the address.
+
+**Sending (not built).** Replies go out through Resend from an `@em.sil.org` address with Reply-To set to the desk's `@sil.org` address, so the sender's reply returns through the group to the app. GHD-382 records that GTIS will not add vendor includes to SIL's SPF, which is why the already-verified `em.sil.org` is used. A desk can never send from another desk's address. Store the Message-ID Resend assigns to each outbound message so replies thread.
+
+**Cutover (later, per address).** Because the Resend address is only a group member, YouTrack and the app run side by side as long as wanted. To retire YouTrack for a desk: turn on `live_replies` for its addresses, then remove YouTrack from the group. Addresses that are plain aliases (not groups) can deliver a copy to the Resend address through a Workspace routing rule, one rule per address.
 
 ## 7. Reporter detection
 
@@ -188,9 +190,9 @@ Behaviour by confidence:
 
 ## 13. Suggested build order
 
-0. **Admin prerequisites (Kate):** ingest user, dedicated Google Cloud project with the Gmail API and an Internal OAuth consent screen, a refresh token obtained signed in as the ingest mailbox, one test group with the ingest mailbox as a member, token into Supabase secrets.
+0. **Admin prerequisites (Kate):** Resend receiving address added to one test group (done for helpdesk@sil.org), Resend API key and webhook signing secret into Supabase secrets, webhook endpoint added in Resend, check Resend receiving limits and plan.
 1. **Schema:** `helpdesk` schema, statuses, roles, RLS, address and mailbox tables. *(Built: `supabase/schema_helpdesk.sql`, with 63 access-rule checks in `supabase/tests/`.)*
-2. **Ingestion:** poller, routing, unrouted queue, loop protection, threading, attachments. Parallel run on one desk alongside YouTrack. *(Built: `supabase/functions/helpdesk-ingest/`. Receive-only: it sends no email yet, only flags forwards as reporter-unverified, and does not scan attachments. Unit-tested against fakes; not yet run against real Gmail, Supabase, or Google Group mail. See SETUP.md step 9.)*
+2. **Ingestion:** Resend webhook, routing, unrouted queue, loop protection, threading, attachments. Parallel run on one desk alongside YouTrack. *(Built: `supabase/functions/helpdesk-inbound/`. Receive-only: it sends no email yet, only flags forwards as reporter-unverified, and does not scan attachments. Unit-tested against fixtures shaped like real group-delivered mail; not yet deployed or run against a live Supabase project. See SETUP.md step 9.)*
 3. **Ticket UI:** queue, ticket detail, reply and internal note, assignment, CCs, notifications.
 4. **Reporter view, admin screens, branding.**
 5. **Reporter detection:** layers 1, 2 and 4, then layer 3 only if needed.
@@ -201,7 +203,7 @@ Behaviour by confidence:
 
 ## 14. Risks and open items
 
-- Ingest credential: a leaked refresh token could read the ingest mailbox only. Mitigate with secrets-only storage and the minimum scope. If domain-wide delegation is ever adopted, a leaked key could read any mailbox in the domain for the granted scopes, so it needs admin review.
+- Resend credentials: the API key can read received mail (and, if Full access, send); keep it in Supabase secrets only, use the narrowest scope Resend offers, and give outbound sending its own key. A forged webhook is prevented by the Svix signature check. Resend holds copies of ticket email for its retention period, which is a data-policy point to confirm.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
 - Editing the Doc from the app has not been tested; try it on a copy first. The service account needs editor access to that one file.

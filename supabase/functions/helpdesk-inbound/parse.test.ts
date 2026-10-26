@@ -1,13 +1,13 @@
-// Run with: node --experimental-strip-types --test supabase/functions/helpdesk-ingest/
+// Run with: node --experimental-strip-types --test supabase/functions/helpdesk-inbound/
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  autoReplyReason, candidateAddresses, decodeBase64Url, extractBody, listAttachments, looksForwarded,
-  parseAddress, parseAddressList, parseReferences, routeDesk, safeFilename, stripGroupFooter, truncateBody, MAX_BODY_CHARS,
+  autoReplyReason, candidateAddresses, htmlToText, looksForwarded,
+  parseAddress, parseAddressList, parseReferences, routeDesk, safeFilename, stripGroupFooter, stripQuotedReply,
+  truncateBody, MAX_BODY_CHARS,
 } from './parse.ts'
 
 const h = (o: Record<string, string>) => Object.entries(o).map(([name, value]) => ({ name, value }))
-const b64 = (s: string) => Buffer.from(s).toString('base64url')
 
 test('parseAddress handles the common shapes', () => {
   assert.deepEqual(parseAddress('"Pat Smith" <Pat@X.org>'), { email: 'pat@x.org', name: 'Pat Smith' })
@@ -26,13 +26,13 @@ test('parseAddressList splits on commas outside quotes and brackets', () => {
 
 test('candidateAddresses puts group headers first and de-duplicates', () => {
   const c = candidateAddresses(h({
-    'Delivered-To': 'helpdesk-ingest@sil.org',
+    'Delivered-To': 'helpdesk-inbound@sil.org',
     'List-Post': '<mailto:dallas-help@sil.org>',
     'To': 'Dallas Help <dallas-help@sil.org>',
     'Cc': 'someone@x.org',
     'List-Id': '<dallas-help.sil.org>',
   }))
-  assert.deepEqual(c, ['dallas-help@sil.org', 'helpdesk-ingest@sil.org', 'someone@x.org'])
+  assert.deepEqual(c, ['dallas-help@sil.org', 'helpdesk-inbound@sil.org', 'someone@x.org'])
 })
 
 test('candidateAddresses reads Mailing-list and falls back to List-Id', () => {
@@ -85,33 +85,34 @@ test('parseReferences extracts message ids', () => {
   assert.deepEqual(parseReferences(''), [])
 })
 
-test('extractBody prefers text/plain, falls back to stripped html', () => {
-  const both = { mimeType: 'multipart/alternative', parts: [
-    { mimeType: 'text/plain', body: { data: b64('plain text') } },
-    { mimeType: 'text/html', body: { data: b64('<p>html text</p>') } } ] }
-  assert.equal(extractBody(both), 'plain text')
-  const htmlOnly = { mimeType: 'text/html', body: { data: b64('<style>p{}</style><p>Hello&nbsp;<b>there</b></p><div>bye &amp; thanks</div>') } }
-  assert.equal(extractBody(htmlOnly), 'Hello there\nbye & thanks')
-  assert.equal(extractBody({ mimeType: 'image/png' }), '')
-  // an attached .txt file is not the body
-  const withAttachment = { mimeType: 'multipart/mixed', parts: [
-    { mimeType: 'text/plain', filename: 'notes.txt', body: { data: b64('attached'), attachmentId: 'a1' } },
-    { mimeType: 'text/plain', body: { data: b64('real body') } } ] }
-  assert.equal(extractBody(withAttachment), 'real body')
+test('stripGroupFooter also removes the short unsubscribe footer seen on real group mail', () => {
+  const body = 'now with attachys\n\nKate\n\nTo unsubscribe from this group and stop receiving emails from it, send an email to helpdesk+unsubscribe@sil.org.\n'
+  assert.equal(stripGroupFooter(body), 'now with attachys\n\nKate')
 })
 
-test('decodeBase64Url round-trips utf-8', () => {
-  assert.equal(decodeBase64Url(b64('héllo wörld ✓')), 'héllo wörld ✓')
+test('htmlToText strips tags and entities', () => {
+  assert.equal(htmlToText('<style>p{}</style><p>Hello&nbsp;<b>there</b></p><div>bye &amp; thanks</div>'), 'Hello there\nbye & thanks')
 })
 
-test('listAttachments finds nested attachment parts', () => {
-  const payload = { mimeType: 'multipart/mixed', parts: [
-    { mimeType: 'text/plain', body: { data: b64('x') } },
-    { mimeType: 'multipart/related', parts: [
-      { mimeType: 'image/png', filename: 'shot.png', body: { attachmentId: 'att1', size: 1234 } } ] },
-    { mimeType: 'application/pdf', filename: 'doc.pdf', body: { attachmentId: 'att2', size: 99 } } ] }
-  assert.deepEqual(listAttachments(payload).map((a) => [a.filename, a.attachmentId, a.size]),
-    [['shot.png', 'att1', 1234], ['doc.pdf', 'att2', 99]])
+test('stripQuotedReply cuts known quote markers when there is new text above', () => {
+  const gmail = 'and a better test!\n\nKate\n\nOn Mon, Oct 26, 2026 at 8:54 AM SIL Global IT Helpdesk\n<service@youtrack.cloud> wrote:\n\n> ##- Please enter your reply above this line -##\n> hi'
+  assert.equal(stripQuotedReply(gmail), 'and a better test!\n\nKate')
+  const oneLine = 'Thanks!\n\nOn Tue, 3 Mar 2026, Pat <pat@x.org> wrote:\n> old'
+  assert.equal(stripQuotedReply(oneLine), 'Thanks!')
+  const youtrack = 'Fixed it.\n##- Please enter your reply above this line -##\nrest'
+  assert.equal(stripQuotedReply(youtrack), 'Fixed it.')
+  const outlook = 'Yes please.\n\n-----Original Message-----\nFrom: a\nSent: b'
+  assert.equal(stripQuotedReply(outlook), 'Yes please.')
+  const outlookBlock = 'Yes.\n\nFrom: Pat <p@x.org>\nSent: Monday\nTo: me\nSubject: x\n\nold'
+  assert.equal(stripQuotedReply(outlookBlock), 'Yes.')
+})
+
+test('stripQuotedReply leaves text alone when nothing was written above the marker', () => {
+  const onlyQuote = 'On Mon, Pat <p@x.org> wrote:\n> the whole question'
+  assert.equal(stripQuotedReply(onlyQuote), onlyQuote)
+  assert.equal(stripQuotedReply('no markers here'), 'no markers here')
+  // a sentence that merely contains "wrote:" is not a marker
+  assert.equal(stripQuotedReply('The vendor wrote: do not reboot'), 'The vendor wrote: do not reboot')
 })
 
 test('safeFilename neutralises path tricks', () => {
