@@ -96,7 +96,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 **Not yet verified:** the attachment-content download call, whether the 40 MB per-email limit Resend documents for sending also applies to received mail (not stated for inbound; our own cap is 10 MB per stored attachment, `HELPDESK_MAX_ATTACHMENT_BYTES`), delivery from groups that restrict external senders, what happens to mail that arrives after the quota is exhausted, and a second group's headers (a single Resend address serves every desk, routed by `received_for`).
 
 **Processing (`supabase/functions/helpdesk-inbound/`).**
-- The deploy uses `--no-verify-jwt`, so authentication is ours: the Svix signature against `RESEND_WEBHOOK_SECRET` (the function refuses to run without it). One stored email can be re-processed by hand with `HELPDESK_REPROCESS_SECRET`.
+- The deploy uses `--no-verify-jwt`, so authentication is ours: the Svix signature against `HELPDESK_RESEND_WEBHOOK_SECRET` (the function refuses to run without it). One stored email can be re-processed by hand with `HELPDESK_REPROCESS_SECRET`.
 - Sender = `X-Original-Sender`, else `From`. Desk = first of: group headers, `To`/`Cc`, `received_for`, matched against `desk_addresses`. Mail matching no desk gets an `ingest_log` row (`unrouted`) for the super admin and is re-processed after the address is added.
 - Failures return an error so Resend retries the webhook; the Resend email id is the dedupe key, so duplicates are harmless.
 - Threading by `In-Reply-To`/`References`. Replies have quoted history stripped (known markers only, and only when something was written above them); forwards are kept whole and flagged.

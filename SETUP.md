@@ -359,15 +359,20 @@ flags forwards as "reporter unverified"), or scan attachments for viruses.
 ### 9b. Supabase secrets and deploy
 
 ```bash
-supabase secrets set RESEND_API_KEY=re_... RESEND_WEBHOOK_SECRET=whsec_...
+supabase secrets set HELPDESK_RESEND_API_KEY=re_... HELPDESK_RESEND_WEBHOOK_SECRET=whsec_...
 # optional: lets you re-process one stored email by hand (see 9d); leave unset to disable
 supabase secrets set HELPDESK_REPROCESS_SECRET="$(openssl rand -hex 32)"
 ```
 
+`HELPDESK_`-prefixed (not just `RESEND_API_KEY` / `RESEND_WEBHOOK_SECRET`)
+because this project's secrets are shared with `license-manager` in one flat
+namespace — if that project already has a secret of some other name, setting
+an unprefixed name here would silently overwrite it.
+
 (Or Dashboard > Edge Functions > Secrets.) Deploy with
 `supabase functions deploy helpdesk-inbound --no-verify-jwt`; the GitHub
 Action does this on push to `main`. The function checks Resend's signature
-itself and refuses to run without `RESEND_WEBHOOK_SECRET`, which is what stops
+itself and refuses to run without `HELPDESK_RESEND_WEBHOOK_SECRET`, which is what stops
 anyone on the internet from posting fake mail to it.
 
 ### 9c. Connect a desk address (parallel run first)

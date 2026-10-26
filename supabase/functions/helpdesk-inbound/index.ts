@@ -10,7 +10,7 @@ import type { Db } from './resend.ts'
 // HTTP entry point.
 //
 // The deploy uses --no-verify-jwt, so authentication is ours:
-//   - Resend's calls are checked against RESEND_WEBHOOK_SECRET (Svix
+//   - Resend's calls are checked against HELPDESK_RESEND_WEBHOOK_SECRET (Svix
 //     signature). Without it the function refuses to run.
 //   - Re-processing one stored email by hand (e.g. after adding a missing
 //     desk address) needs header x-helpdesk-secret = HELPDESK_REPROCESS_SECRET
@@ -37,8 +37,8 @@ Deno.serve(async (req) => {
     } catch { /* handled below */ }
     if (!emailId) return json({ error: 'body must be {"email_id": "..."}' }, 400)
   } else {
-    const webhookSecret = Deno.env.get('RESEND_WEBHOOK_SECRET')
-    if (!webhookSecret) return json({ error: 'RESEND_WEBHOOK_SECRET is not configured' }, 500)
+    const webhookSecret = Deno.env.get('HELPDESK_RESEND_WEBHOOK_SECRET')
+    if (!webhookSecret) return json({ error: 'HELPDESK_RESEND_WEBHOOK_SECRET is not configured' }, 500)
     const ok = await verifyWebhook(raw, {
       id: req.headers.get('svix-id'),
       timestamp: req.headers.get('svix-timestamp'),
@@ -57,8 +57,8 @@ Deno.serve(async (req) => {
     if (!emailId) return json({ error: 'event has no data.email_id' }, 400)
   }
 
-  const apiKey = Deno.env.get('RESEND_API_KEY')
-  if (!apiKey) return json({ error: 'RESEND_API_KEY is not configured' }, 500)
+  const apiKey = Deno.env.get('HELPDESK_RESEND_API_KEY')
+  if (!apiKey) return json({ error: 'HELPDESK_RESEND_API_KEY is not configured' }, 500)
 
   try {
     const db: Db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
