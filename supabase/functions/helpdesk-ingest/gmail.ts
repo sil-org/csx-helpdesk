@@ -1,13 +1,13 @@
-// Gmail access for helpdesk-ingest: token acquisition (service account with
-// domain-wide delegation, or a stored OAuth refresh token for mailboxes
-// outside the sil.org Workspace, like the BTC pilot) and a thin API wrapper.
+// Gmail access for helpdesk-ingest: token acquisition (a stored OAuth refresh
+// token for one mailbox, the normal path, or optionally a service account with
+// domain-wide delegation) and a thin API wrapper.
 // Uses only fetch and WebCrypto, so it also runs under Node for tests.
 
 import { decodeBase64UrlBytes } from './parse.ts'
 import type { Payload } from './parse.ts'
 
 // Least privilege for ingestion: read + label/archive. Sending replies will
-// need gmail.send too (a later phase); the delegation grant should then add it.
+// need gmail.send too (a later phase); the consent or delegation grant should then add it.
 export const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 

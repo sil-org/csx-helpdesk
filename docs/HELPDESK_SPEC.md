@@ -18,7 +18,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 8 | Desk admins can promote agents on their own desk to desk admin. Logged; a desk always keeps at least one admin. |
 | 9 | An agent can work on several desks, with a desk switcher. |
 | 10 | CCs get email only; no app access. |
-| 11 | Ingestion: service account with domain-wide delegation reading one dedicated ingest mailbox. Parallel run with YouTrack first; alias cutover per desk later. |
+| 11 | Ingestion: one dedicated ingest mailbox read with an OAuth refresh token (consent screen Internal), so access is limited to that one mailbox. A service account with domain-wide delegation stays an option for later multi-mailbox use. Parallel run with YouTrack first; alias cutover per desk later. |
 | 12 | Each desk can have several addresses, and optionally its own mailbox. |
 | 13 | AI drafts are generated automatically on every new ticket and on every new requester reply (cached), draft-only in v1. |
 | 14 | Shared RAG corpus across all desks; each desk may opt out of contributing. |
@@ -79,9 +79,10 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 
 ## 6. Email ingestion
 
-**Mailbox and auth.** One dedicated, non-human ingest mailbox (for example `helpdesk-ingest@sil.org`) read through a Google Cloud service account with domain-wide delegation. Scopes: `gmail.modify` and `gmail.send` (to be confirmed before authorizing). The key lives in Supabase secrets only.
+**Mailbox and auth.** One dedicated, non-human ingest mailbox (for example `helpdesk-ingest@sil.org`) read with an OAuth refresh token obtained by signing in once as that mailbox, in a dedicated Google Cloud project inside SIL's organization with the consent screen set to Internal. Scope: `gmail.modify` now, plus `gmail.send` when sending is built (a new token is needed then). The token lives in Supabase secrets only and can only ever read that one mailbox.
 
-- Risk to document: delegation lets the service account impersonate any domain user for the granted scopes; only our code limits it to the ingest mailbox. Admin review required.
+- Why not domain-wide delegation: it lets a service account act as any user in the domain for the granted scopes, and Google cannot limit it to one mailbox; only our code would. It remains supported (`auth_type = 'service_account'`) if desks later get their own mailboxes and one credential for all of them is wanted. If used, the key lives in Supabase secrets only and the scope list stays minimal.
+- The token can stop working if the ingest mailbox's password changes, the account is suspended or consent is revoked; the error is recorded on `ingest_runs` and the fix is to repeat the one-time consent.
 - The BTC pilot stays on its OAuth token until sil.org is ready (different Workspace domain).
 
 **Parallel run (first).** Existing desks use Google Groups with YouTrack as a subscriber. Add the ingest mailbox as another member of one test desk's group. YouTrack keeps working untouched.
@@ -187,7 +188,7 @@ Behaviour by confidence:
 
 ## 13. Suggested build order
 
-0. **Admin prerequisites (Kate):** ingest user, Google Cloud service account with Gmail API, delegation authorization, one test group with the ingest mailbox as a member, key into Supabase secrets.
+0. **Admin prerequisites (Kate):** ingest user, dedicated Google Cloud project with the Gmail API and an Internal OAuth consent screen, a refresh token obtained signed in as the ingest mailbox, one test group with the ingest mailbox as a member, token into Supabase secrets.
 1. **Schema:** `helpdesk` schema, statuses, roles, RLS, address and mailbox tables. *(Built: `supabase/schema_helpdesk.sql`, with 63 access-rule checks in `supabase/tests/`.)*
 2. **Ingestion:** poller, routing, unrouted queue, loop protection, threading, attachments. Parallel run on one desk alongside YouTrack. *(Built: `supabase/functions/helpdesk-ingest/`. Receive-only: it sends no email yet, only flags forwards as reporter-unverified, and does not scan attachments. Unit-tested against fakes; not yet run against real Gmail, Supabase, or Google Group mail. See SETUP.md step 9.)*
 3. **Ticket UI:** queue, ticket detail, reply and internal note, assignment, CCs, notifications.
@@ -200,7 +201,7 @@ Behaviour by confidence:
 
 ## 14. Risks and open items
 
-- Domain-wide delegation scope: a leaked key could read any mailbox for the granted scopes. Mitigate with secrets-only storage, minimal scopes, admin review.
+- Ingest credential: a leaked refresh token could read the ingest mailbox only. Mitigate with secrets-only storage and the minimum scope. If domain-wide delegation is ever adopted, a leaked key could read any mailbox in the domain for the granted scopes, so it needs admin review.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
 - Editing the Doc from the app has not been tested; try it on a copy first. The service account needs editor access to that one file.

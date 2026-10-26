@@ -300,46 +300,55 @@ mail that matches no desk. **What it doesn't do yet:** send any email
 (replies, acknowledgements), detect the real reporter on a forward (it only
 flags forwards as "reporter unverified"), or scan attachments for viruses.
 
-### 9a. sil.org: ingest mailbox + service account (production path)
+### 9a. sil.org: ingest mailbox with OAuth (production path)
 
-Needs a Google Workspace super admin.
+Reads exactly one mailbox, `helpdesk-ingest@sil.org`, using a refresh token
+you get by signing in as that mailbox once. The token can only ever read and
+label that one mailbox. (A service account with domain-wide delegation can act
+as *any* user in the domain, which is far more than one mailbox needs; it is
+described in 9d as an option for later.)
+
+Needs a Google Workspace admin (to create the mailbox) and access to SIL's
+Google Cloud organization.
 
 1. **Create the ingest mailbox**, e.g. `helpdesk-ingest@sil.org`, a
-   non-human user nobody reads mail in.
-2. **Google Cloud Console** > a project > **APIs & Services > Library** >
-   enable the **Gmail API**. **IAM & Admin > Service Accounts** > create one
-   (e.g. `helpdesk-ingest`). Note its **Unique ID** (the numeric client ID).
-3. **Admin console > Security > Access and data control > API controls >
-   Manage Domain Wide Delegation > Add new**: Client ID = the Unique ID,
-   scope = `https://www.googleapis.com/auth/gmail.modify` (read, label,
-   archive). When reply-sending is built it will also need
-   `https://www.googleapis.com/auth/gmail.send`.
-
-   **Know what this grants:** delegation lets this service account act as
-   *any* user in the domain for the scopes granted; only the code limits it
-   to the ingest mailbox. Keep the key in Supabase secrets only, never in the
-   repo, and keep the scope list minimal.
-4. Create a key for the service account (**Keys > Add key > JSON**), then:
+   non-human user nobody reads mail in. It has no Staff Identity account, so it
+   signs in with a plain Google login: set up Google 2-step verification on it,
+   because you will sign in as it once in step 5.
+2. **Google Cloud Console:** create a dedicated project inside SIL's Cloud
+   organization (e.g. `sil-helpdesk`), owned by an admin account or group and
+   not by a personal account. **APIs & Services > Library** > enable the
+   **Gmail API**.
+3. **OAuth consent screen:** user type **Internal** (limits sign-in to your
+   Workspace, needs no Google verification, and its refresh tokens don't
+   expire after 7 days). Add the scope
+   `https://www.googleapis.com/auth/gmail.modify` (read, label, archive). When
+   reply-sending is built it will also need `gmail.send`, and you will repeat
+   step 5 to get a new token.
+4. **Credentials > Create credentials > OAuth client ID**, type **Web
+   application**, with the redirect URI exactly
+   `https://developers.google.com/oauthplayground`. Copy the Client ID and
+   Client Secret.
+5. **Get a refresh token** exactly as in 9b step 3, but **signed in as
+   `helpdesk-ingest@sil.org`**. Treat the token like a password.
+6. Secrets:
 
    ```bash
-   supabase secrets set HELPDESK_GOOGLE_SA_JSON="$(cat key.json)"
+   supabase secrets set HELPDESK_INGEST_CLIENT_ID=... HELPDESK_INGEST_CLIENT_SECRET=... HELPDESK_INGEST_REFRESH_TOKEN=...
    supabase secrets set HELPDESK_CRON_SECRET="$(openssl rand -hex 32)"
    ```
 
-   (If your organization blocks service-account key creation, that's a policy
-   decision to resolve with whoever owns the Cloud organization; the function
-   needs a key or an equivalent way to mint the delegation token.)
-5. **Register the mailbox and each desk's addresses** (SQL editor):
+7. **Register the mailbox and each desk's addresses** (SQL editor):
 
    ```sql
-   insert into helpdesk.desk_mailboxes (mailbox, auth_type)
-   values ('helpdesk-ingest@sil.org', 'service_account');   -- shared: desk_id null
+   insert into helpdesk.desk_mailboxes (mailbox, auth_type, secret_prefix)
+   values ('helpdesk-ingest@sil.org', 'oauth', 'HELPDESK_INGEST');   -- shared: desk_id null
 
    insert into helpdesk.desk_addresses (address, desk_id)
    select 'dallas-help@sil.org', id from helpdesk.desks where slug = 'dallas';
    ```
 
-6. **Get mail into the ingest mailbox** (per address, see spec section 6):
+8. **Get mail into the ingest mailbox** (per address, see spec section 6):
    - *Parallel run with YouTrack:* add the ingest mailbox as another member of
      the desk's Google Group. YouTrack keeps receiving everything.
    - *Cutover:* move the address from the group to an alias on the ingest
@@ -351,6 +360,13 @@ Needs a Google Workspace super admin.
    documentation, not yet confirmed on real mail: check the first real
    message with `select * from helpdesk.ingest_log` / `tickets` and tell
    whoever is maintaining this if routing misses.
+
+**If it stops working:** a refresh token can stop working if the mailbox's
+password is changed (Google can revoke tokens that carry Gmail scopes after a
+password change; confirm this for your setup), the account is suspended, or
+the consent is revoked. The poller records the error on `helpdesk.ingest_runs`
+(`error` column); fix it by repeating step 5 and updating the
+`HELPDESK_INGEST_REFRESH_TOKEN` secret.
 
 ### 9b. BTC conference pilot (OAuth, different Workspace domain)
 
@@ -406,6 +422,27 @@ mail, so the poller is restricted to messages carrying the Gmail label
    `desk_addresses`, re-route with body `{"retry_unrouted": true}`. Messages
    that fail three times are labelled `HelpdeskFailed` and stay in
    `ingest_log` with the error.
+
+### 9d. Optional: service account with domain-wide delegation
+
+Not needed for a single ingest mailbox. Consider it only if desks later get
+their own mailboxes and you want one credential for all of them. **Know what
+this grants:** delegation lets the service account act as *any* user in the
+domain for the scopes granted; only our code limits it to the mailboxes in
+`desk_mailboxes`. Google cannot restrict it to one account.
+
+1. In the Cloud project, **IAM & Admin > Service Accounts** > create one. Note
+   its **Unique ID**.
+2. **Admin console > Security > Access and data control > API controls >
+   Manage Domain Wide Delegation > Add new**: Client ID = the Unique ID,
+   scope = `https://www.googleapis.com/auth/gmail.modify` (and `gmail.send`
+   once sending is built).
+3. Create a JSON key (if your organization blocks key creation, that is a
+   policy decision for whoever owns the Cloud organization), then
+   `supabase secrets set HELPDESK_GOOGLE_SA_JSON="$(cat key.json)"`. Keep it in
+   Supabase secrets only, never in the repo.
+4. Register a mailbox with `auth_type = 'service_account'` instead of
+   `'oauth'` (no `secret_prefix` needed).
 
 ### Tests
 

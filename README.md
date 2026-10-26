@@ -8,7 +8,7 @@ Built on [`sil-app-template`](https://github.com/kode-monki/sil-app-template) �
 
 ## Stack
 
-React + Vite + Tailwind, Supabase (Postgres/Auth), Gmail API (service account with domain-wide delegation for sil.org mailboxes; OAuth for outside-domain mailboxes) for inbound email, Voyage AI embeddings + `pgvector` for RAG, Claude API for draft generation. Deployed to AWS S3/CloudFront via GitHub Actions.
+React + Vite + Tailwind, Supabase (Postgres/Auth), Gmail API (OAuth refresh token for the one dedicated ingest mailbox; a service account with delegation is an optional alternative) for inbound email, Voyage AI embeddings + `pgvector` for RAG, Claude API for draft generation. Deployed to AWS S3/CloudFront via GitHub Actions.
 
 ## Status
 
@@ -17,14 +17,14 @@ Repo scaffold only. Built so far:
 - Supabase schema in two files: `supabase/schema.sql` is the template's auth kernel (shared with license-manager; the sil.org check is enabled, scoped to new-profile creation only — see account linking below); `supabase/schema_helpdesk.sql` is the help desk, in its own Postgres schema `helpdesk` so the app can be split out later — desks and per-desk branding, desk addresses and mailboxes, requesters, tickets (seven statuses), messages, attachments, participants, an audit log, and role-aware row-level security for super admins, desk admins, agents and reporters (implements `docs/HELPDESK_SPEC.md` sections 3-6). Corpus/AI-draft tables come with that phase. Access rules are covered by SQL tests in `supabase/tests/`
 - `/account` page for staff to link a personal Google account (e.g. a personal Gmail) as backup sign-in access, in case they ever lose access to their SIL email
 - Stub `embed-document` edge function (`supabase/functions/embed-document/`) that embeds a corpus document via Voyage AI — gated on `VOYAGE_TRAINING_OPT_OUT_CONFIRMED` (see below)
-- `helpdesk-ingest` edge function (`supabase/functions/helpdesk-ingest/`): polls the mailboxes in `helpdesk.desk_mailboxes` (service account with domain-wide delegation, or OAuth for the BTC pilot), routes mail to a desk by address, threads replies, reopens tickets on reply, stores attachments, skips automatic replies, and parks unroutable mail. Receive-only for now (sends nothing). `npm run test:ingest` runs its unit tests; setup is `SETUP.md` step 9
+- `helpdesk-ingest` edge function (`supabase/functions/helpdesk-ingest/`): polls the mailboxes in `helpdesk.desk_mailboxes` (OAuth for the dedicated ingest mailbox and the BTC pilot, or optionally a service account), routes mail to a desk by address, threads replies, reopens tickets on reply, stores attachments, skips automatic replies, and parks unroutable mail. Receive-only for now (sends nothing). `npm run test:ingest` runs its unit tests; setup is `SETUP.md` step 9
 - `.github/workflows/deploy.yml` — builds + deploys the frontend to S3/CloudFront and edge functions to Supabase on push to `main`
 
 Not started: ticket UI beyond the placeholder, RAG retrieval, AWS-ticket automation logging, migration tooling, sending email (replies, acknowledgements), real reporter detection on forwards, and the roles/admin UI (the database side exists). `helpdesk-ingest` has a pg_cron schedule template (`supabase/schedule_helpdesk_ingest.sql`) that hasn't been run against a live project. Per the brief's own recommendation, hold off on AWS-ticket integration and migration tooling until desk participation is confirmed.
 
 ### Email intake: sil.org ingest mailbox (production path) and a BTC test pilot
 
-The production design is one dedicated ingest mailbox on sil.org (e.g. `helpdesk-ingest@sil.org`), read by a Google service account with domain-wide delegation, with each desk's addresses added as Google Group memberships (parallel run alongside YouTrack) or aliases (cutover). See `SETUP.md` step 9a and `docs/HELPDESK_SPEC.md` section 6. Until those are set up, `SETUP.md` step 9b describes a test pilot on `helpdesk-test@btconference.org` (an alias on `info@btconference.org`), isolated by a Gmail filter + label so the poller can't touch real BTC conference mail. That pilot is a stand-in only; don't leave production ticket intake on a conference domain.
+The production design is one dedicated ingest mailbox on sil.org (e.g. `helpdesk-ingest@sil.org`), read with an OAuth refresh token for that one mailbox (no domain-wide delegation needed), with each desk's addresses added as Google Group memberships (parallel run alongside YouTrack) or aliases (cutover). See `SETUP.md` step 9a and `docs/HELPDESK_SPEC.md` section 6. Until those are set up, `SETUP.md` step 9b describes a test pilot on `helpdesk-test@btconference.org` (an alias on `info@btconference.org`), isolated by a Gmail filter + label so the poller can't touch real BTC conference mail. That pilot is a stand-in only; don't leave production ticket intake on a conference domain.
 
 ### Voyage AI data-training opt-out — required before embedding real ticket content
 
