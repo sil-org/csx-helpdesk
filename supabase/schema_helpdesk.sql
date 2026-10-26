@@ -172,6 +172,14 @@ create table if not exists helpdesk.tickets (
   updated_at timestamptz not null default now()
 );
 
+-- Reporter detection layer 1 (spec section 7): a best-effort guess at who a
+-- forward is really about, parsed from the quoted "From:" line at ingestion.
+-- Proposal only — never applied automatically; stays alongside requester_id
+-- (the confirmed reporter) as the agent's starting point for reassignment.
+alter table helpdesk.tickets add column if not exists detected_sender_name text;
+alter table helpdesk.tickets add column if not exists detected_sender_email text
+  check (detected_sender_email = lower(detected_sender_email));
+
 create index if not exists tickets_current_desk_id_idx on helpdesk.tickets(current_desk_id);
 create index if not exists tickets_status_idx on helpdesk.tickets(status);
 create index if not exists tickets_requester_id_idx on helpdesk.tickets(requester_id);
@@ -255,6 +263,38 @@ create table if not exists helpdesk.ticket_links (
   created_at timestamptz not null default now(),
   primary key (ticket_id, linked_ticket_id)
 );
+
+-- ── AI drafts (spec section 11) ───────────────────────────────────────────
+
+-- Never sent itself; the compose box starts from one of these and an agent
+-- edits/sends it as a normal outbound ticket_messages row. Written by
+-- generate-draft (service_role) only. superseded_at is set either by a new
+-- requester reply (generate-draft supersedes the old one before inserting
+-- a fresh draft) or by an agent dismissing it; either way "no longer the
+-- active suggestion" — older drafts stay for history, never deleted.
+create table if not exists helpdesk.ticket_drafts (
+  id uuid primary key default gen_random_uuid(),
+  ticket_id uuid not null references helpdesk.tickets(id) on delete cascade,
+  body text not null,
+  cited_sources jsonb,
+  model text,
+  superseded_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists ticket_drafts_ticket_id_idx on helpdesk.ticket_drafts(ticket_id, created_at desc);
+
+-- Cached full text of the knowledge-base Google Doc (decision 19: the Doc
+-- stays the single source of truth; v1 reads it in full, no embeddings).
+-- Refreshed daily by refresh-kb-cache rather than fetched live on every
+-- draft, since drafts are latency- and cost-sensitive and the Doc rarely
+-- changes within a day.
+create table if not exists helpdesk.kb_cache (
+  id boolean primary key default true check (id),
+  content text,
+  source_doc_id text,
+  refreshed_at timestamptz
+);
+insert into helpdesk.kb_cache (id) values (true) on conflict do nothing;
 
 -- ── Ingestion bookkeeping ────────────────────────────────────────────────
 
@@ -529,6 +569,40 @@ begin
 end;
 $$;
 
+-- ── RPC: manual reporter reassignment (spec section 7, layer 4) ──────────
+-- requester_id isn't in tickets' column grants (every other path to it is
+-- audited), so this is the only way to change it. Finds or creates the
+-- requester by email, marks the ticket verified at full confidence, and logs
+-- 'reporter_changed' via the existing tickets_audit trigger.
+
+create or replace function helpdesk.reassign_reporter(p_ticket_id uuid, p_email text, p_display_name text default null)
+returns void language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_email text := lower(trim(p_email));
+  v_requester uuid;
+begin
+  if not helpdesk.can_work_ticket(p_ticket_id) then
+    raise exception 'not allowed: must be able to work this ticket';
+  end if;
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'invalid email: %', p_email;
+  end if;
+
+  insert into helpdesk.requesters (email, display_name)
+  values (v_email, nullif(trim(p_display_name), ''))
+  on conflict (email) do update
+    set display_name = coalesce(excluded.display_name, helpdesk.requesters.display_name)
+  returning id into v_requester;
+
+  update helpdesk.tickets
+  set requester_id = v_requester, reporter_verified = true, reporter_confidence = 1.0
+  where id = p_ticket_id;
+end;
+$$;
+
+revoke all on function helpdesk.reassign_reporter(uuid, text, text) from public;
+grant execute on function helpdesk.reassign_reporter(uuid, text, text) to authenticated;
+
 -- ── RPC: record one inbound email (used by the helpdesk-ingest function) ─
 -- One transaction: dedupe, find/create requester, thread onto a ticket or
 -- open a new one, reopen on reply, store the message, mark the address as
@@ -536,7 +610,9 @@ $$;
 --
 -- p keys: mailbox, desk_id, source_address, gmail_message_id, gmail_thread_id,
 -- rfc_message_id, in_reply_to, references (array), from_email, from_name,
--- subject, body, headers (object), forwarded (bool)
+-- subject, body, headers (object), forwarded (bool), forwarded_sender_name,
+-- forwarded_sender_email, detected_sender_confidence (layer-1 guess — from a
+-- forward's header or a bounce's body — set only at ticket creation)
 -- (The gmail_* keys are historical names: helpdesk-inbound puts the Resend
 -- email id in gmail_message_id and leaves gmail_thread_id null.)
 
@@ -547,6 +623,8 @@ declare
   v_ext_id text := p->>'gmail_message_id';
   v_from text := lower(p->>'from_email');
   v_requester uuid;
+  v_detected_requester uuid;
+  v_confidence numeric(3, 2) := nullif(p->>'detected_sender_confidence', '')::numeric;
   v_ticket uuid;
   v_old_status helpdesk.ticket_status;
   v_forwarded_to text;
@@ -566,6 +644,24 @@ begin
   on conflict (email) do update
     set display_name = coalesce(helpdesk.requesters.display_name, excluded.display_name)
   returning id into v_requester;
+
+  -- A detected sender (parsed from a forward's header, or found in a bounce
+  -- body — spec section 7, layers 1 and the bounce-handling extension of it)
+  -- is always a better starting requester than the literal envelope sender
+  -- (a colleague who merely forwarded it, or a bounce's own mailer-daemon).
+  -- High confidence (a cleanly-parsed forward: 0.9) assigns it outright and
+  -- marks the reporter verified; lower confidence (a bounce's broader body
+  -- scan: 0.4) still uses it as requester_id but leaves reporter_verified
+  -- false, so an agent still sees the unverified-reporter confirm UI.
+  -- detected_sender_name/email on the ticket keep the original guess visible
+  -- either way, for an agent who wants to double-check it.
+  if p->>'forwarded_sender_email' is not null then
+    insert into helpdesk.requesters (email, display_name)
+    values (lower(p->>'forwarded_sender_email'), nullif(trim(p->>'forwarded_sender_name'), ''))
+    on conflict (email) do update
+      set display_name = coalesce(helpdesk.requesters.display_name, excluded.display_name)
+    returning id into v_detected_requester;
+  end if;
 
   -- Thread: Gmail thread in this mailbox first, then RFC In-Reply-To/References.
   select m.ticket_id into v_ticket
@@ -590,10 +686,17 @@ begin
   if v_ticket is null then
     insert into helpdesk.tickets
       (current_desk_id, subject, requester_id, sender_email, source_address,
-       reporter_verified, last_requester_reply_at)
+       reporter_verified, reporter_confidence, detected_sender_name, detected_sender_email,
+       last_requester_reply_at)
     values
-      ((p->>'desk_id')::uuid, p->>'subject', v_requester, v_from, lower(p->>'source_address'),
-       not coalesce((p->>'forwarded')::boolean, false), now())
+      ((p->>'desk_id')::uuid, p->>'subject', coalesce(v_detected_requester, v_requester), v_from,
+       lower(p->>'source_address'),
+       case when v_detected_requester is not null and v_confidence >= 0.8 then true
+            when v_detected_requester is not null then false
+            else not coalesce((p->>'forwarded')::boolean, false) end,
+       case when v_detected_requester is not null then coalesce(v_confidence, 0.5) else null end,
+       nullif(p->>'forwarded_sender_name', ''), lower(nullif(p->>'forwarded_sender_email', '')),
+       now())
     returning id into v_ticket;
     v_created := true;
   else
@@ -656,6 +759,8 @@ alter table helpdesk.ticket_events enable row level security;
 alter table helpdesk.ticket_links enable row level security;
 alter table helpdesk.ingest_runs enable row level security;
 alter table helpdesk.ingest_log enable row level security;
+alter table helpdesk.ticket_drafts enable row level security;
+alter table helpdesk.kb_cache enable row level security;
 
 -- desks: branding is readable by any signed-in user (reporters see the
 -- desk that owns their ticket); only super admins create/delete desks.
@@ -808,6 +913,20 @@ drop policy if exists ingest_log_select on helpdesk.ingest_log;
 create policy ingest_log_select on helpdesk.ingest_log for select to authenticated
   using (helpdesk.is_super_admin());
 
+-- ticket_drafts: staff of the ticket only (never the reporter). Written by
+-- generate-draft (service_role); an agent may only dismiss one (see grants).
+drop policy if exists ticket_drafts_select on helpdesk.ticket_drafts;
+create policy ticket_drafts_select on helpdesk.ticket_drafts for select to authenticated
+  using (helpdesk.is_ticket_staff(ticket_id));
+drop policy if exists ticket_drafts_update on helpdesk.ticket_drafts;
+create policy ticket_drafts_update on helpdesk.ticket_drafts for update to authenticated
+  using (helpdesk.is_ticket_staff(ticket_id)) with check (helpdesk.is_ticket_staff(ticket_id));
+
+-- kb_cache: operational/debugging visibility, super admin only.
+drop policy if exists kb_cache_select on helpdesk.kb_cache;
+create policy kb_cache_select on helpdesk.kb_cache for select to authenticated
+  using (helpdesk.is_super_admin());
+
 -- ── Grants ───────────────────────────────────────────────────────────────
 -- A custom schema gets no default privileges in Supabase. RLS (above) is the
 -- row guard; these grants are the column / operation guard.
@@ -836,10 +955,46 @@ grant insert on helpdesk.ticket_messages to authenticated;
 grant insert, delete on helpdesk.ticket_participants to authenticated;
 grant insert, delete on helpdesk.ticket_links to authenticated;
 
+-- An agent may only dismiss a draft (superseded_at); the content itself is
+-- generate-draft's (service_role gets full access via the earlier blanket grant).
+grant update (superseded_at) on helpdesk.ticket_drafts to authenticated;
+
 revoke all on function helpdesk.set_desk_role(uuid, uuid, text) from public;
 grant execute on function helpdesk.set_desk_role(uuid, uuid, text) to authenticated, service_role;
 revoke all on function helpdesk.ingest_inbound(jsonb) from public;
 grant execute on function helpdesk.ingest_inbound(jsonb) to service_role;
+
+-- ── Daily knowledge-base refresh ─────────────────────────────────────────
+-- Project-specific (the URL below is this Supabase project's); update it if
+-- this app is ever split to its own project (see SETUP.md step 1).
+--
+-- One-time setup, not handled by this file (the secret must never be
+-- committed): generate a secret the same way as HELPDESK_REPROCESS_SECRET
+-- (openssl rand -hex 32), then set the SAME value in both places —
+--   supabase secrets set HELPDESK_KB_REFRESH_SECRET=<value>   (edge function)
+--   select vault.create_secret('<value>', 'helpdesk_kb_refresh_secret');  (SQL editor)
+-- Vault, not a plain column, so the cron job definition below (visible to
+-- other admins on this shared project via cron.job) never shows the raw value.
+
+create extension if not exists pg_cron with schema pg_catalog;
+create extension if not exists pg_net with schema extensions;
+
+select cron.unschedule(jobid) from cron.job where jobname = 'helpdesk-refresh-kb-cache';
+
+select cron.schedule(
+  'helpdesk-refresh-kb-cache',
+  '17 3 * * *', -- once daily, off the hour
+  $cron$
+  select net.http_post(
+    url := 'https://lxomebvymgolbzgkxqgu.supabase.co/functions/v1/refresh-kb-cache',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-helpdesk-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'helpdesk_kb_refresh_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $cron$
+);
 
 -- ── Bootstrap: first super admin ─────────────────────────────────────────
 -- After your first sign-in, run this in the SQL editor (replace the email).

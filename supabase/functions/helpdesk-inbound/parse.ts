@@ -131,9 +131,67 @@ export function autoReplyReason(headers: Header[], from: string, subject: string
   return null
 }
 
+// Which autoReplyReason()s are bounce-shaped (vs. a genuine out-of-office /
+// auto-reply, which should always be dropped): only these are worth looking
+// inside for a real person before giving up on the message entirely.
+export const BOUNCE_REASONS = new Set(['delivery status notification', 'mailer-daemon sender'])
+
+const BOUNCE_SYSTEM_LOCALPART = /^(mailer-daemon|postmaster|bounce(s)?|no-?reply|mdaemon|abuse)\b/i
+
+// A bounce naming a real, identifiable person (e.g. a failed password-reset
+// delivery) must still become a ticket, per autoReplyReason()'s own contract
+// above — this is what actually finds that person. Deliberately broad (any
+// email address in the body that isn't the bounce machinery itself): a
+// false positive just means one extra ticket a human reviews, never an
+// auto-sent reply, so erring toward finding someone is the safer default.
+export function parseBounceRecipient(body: string): { name: string | null; email: string } | null {
+  const matches = body.match(/[^\s<>()[\]",;]+@[^\s<>()[\]",;]+\.[a-zA-Z]{2,}/g) ?? []
+  for (const raw of matches) {
+    const email = raw.replace(/[.,;:]+$/, '').toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) continue
+    if (BOUNCE_SYSTEM_LOCALPART.test(email.split('@')[0])) continue
+    return { name: null, email }
+  }
+  return null
+}
+
 export function looksForwarded(subject: string, body: string): boolean {
   if (/^\s*(fwd?|wg|tr|rv|enc)\s*:/i.test(subject)) return true
   return /-{3,}\s*forwarded message\s*-{3,}|begin forwarded message:/i.test(body)
+}
+
+const FORWARD_MARKERS: RegExp[] = [
+  /-{3,}\s*forwarded message\s*-{3,}/i,
+  /^begin forwarded message:\s*$/im,
+  /^-{2,}\s*original message\s*-{2,}\s*$/im,
+]
+
+// Best-effort original sender from a forward's quoted header block (spec
+// section 7, layer 1: "parse the forwarded block"). A proposal only, at low
+// confidence — never applied automatically; an agent confirms or picks
+// someone else.
+//
+// Matched by shape, not by the "From:" label text: Gmail and Outlook always
+// put the sender on the forwarded block's first header line, but the label
+// itself ("From:", "De:", "Von:", "Da:", ...) is localized to the ORIGINAL
+// sender's own account language, which can differ from the forwarding
+// agent's. So this looks for the first line with a "Name <email>" or bare
+// email token, which is reliably that first line regardless of language.
+export function parseForwardedSender(body: string): { name: string; email: string } | null {
+  let markerEnd = -1
+  for (const re of FORWARD_MARKERS) {
+    const m = re.exec(body)
+    if (m) { markerEnd = m.index + m[0].length; break }
+  }
+  if (markerEnd === -1) return null
+  const lines = body.slice(markerEnd, markerEnd + 2000).split('\n').slice(0, 12)
+  for (const line of lines) {
+    const m = line.match(/^[^:<]{0,40}:?\s*(.+<[^<>\s]+@[^<>\s]+>|[^\s<>:]+@[^\s<>:]+)\s*$/)
+    if (!m) continue
+    const { name, email } = parseAddress(m[1])
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { name, email }
+  }
+  return null
 }
 
 // Remove the footer Google Groups appends to every delivered message. Seen

@@ -3,8 +3,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   autoReplyReason, candidateAddresses, htmlToText, looksForwarded,
-  parseAddress, parseAddressList, parseReferences, routeDesk, safeFilename, stripGroupFooter, stripQuotedReply,
-  truncateBody, MAX_BODY_CHARS,
+  parseAddress, parseAddressList, parseBounceRecipient, parseForwardedSender, parseReferences, routeDesk,
+  safeFilename, stripGroupFooter, stripQuotedReply, truncateBody, MAX_BODY_CHARS,
 } from './parse.ts'
 
 const h = (o: Record<string, string>) => Object.entries(o).map(([name, value]) => ({ name, value }))
@@ -70,6 +70,43 @@ test('looksForwarded flags forward markers, not ordinary replies', () => {
   assert.ok(looksForwarded('help', 'see below\n---------- Forwarded message ---------\nFrom: x'))
   assert.ok(looksForwarded('help', 'Begin forwarded message:\n'))
   assert.ok(!looksForwarded('Re: help', 'On Monday Pat wrote:\n> -----Original Message-----'))
+})
+
+test('parseForwardedSender reads the From: line of a Gmail-style forward', () => {
+  const body = 'FYI, please help.\n\n---------- Forwarded message ---------\n' +
+    'From: J. Whitfield <jwhitfield@example.org>\nDate: Mon, Oct 20, 2026\nSubject: access\nTo: Kate <kate@sil.org>\n\nHi Kate, can you help?'
+  assert.deepEqual(parseForwardedSender(body), { name: 'J. Whitfield', email: 'jwhitfield@example.org' })
+})
+
+test('parseForwardedSender reads an Outlook-style original message block', () => {
+  const body = 'Please see below.\n\n-----Original Message-----\nFrom: Pat Lee <pat.lee@example.org>\nSent: Monday\nTo: Kate\nSubject: help'
+  assert.deepEqual(parseForwardedSender(body), { name: 'Pat Lee', email: 'pat.lee@example.org' })
+})
+
+test('parseForwardedSender matches by shape, not label, for a localized forward', () => {
+  // Real example: Gmail localizes the "From:" label to the original
+  // sender's account language (here Spanish "De:"), not the forwarding
+  // agent's — this must not depend on matching the word "From".
+  const body = 'Kate Brenner\nSIL Global\n\n\n---------- Forwarded message ---------\n' +
+    'De: Tom Brenner <thomasbrenner@gmail.com>\nDate: lun, 26 oct 2026\nSubject: test\nTo: <kate_brenner@sil.org>\n\ntest test'
+  assert.deepEqual(parseForwardedSender(body), { name: 'Tom Brenner', email: 'thomasbrenner@gmail.com' })
+})
+
+test('parseForwardedSender returns null with no marker or no usable From: line', () => {
+  assert.equal(parseForwardedSender('just a normal message, nothing quoted'), null)
+  assert.equal(parseForwardedSender('---------- Forwarded message ---------\nSubject: no from line here'), null)
+})
+
+test('parseBounceRecipient finds a real recipient in an SES bounce, skipping the bounce machinery', () => {
+  const body = 'An error occurred while trying to deliver the mail to the following recipients:\n\n' +
+    'marc_aarnoudse@sil.org:\nRemote host said: 550 5.1.1 unknown user\n\n' +
+    'This is an automatically generated Delivery Status Notification.\nMAILER-DAEMON@amazonses.com'
+  assert.deepEqual(parseBounceRecipient(body), { name: null, email: 'marc_aarnoudse@sil.org' })
+})
+
+test('parseBounceRecipient returns null for pure infrastructure noise with no real recipient', () => {
+  const body = 'This confirms your subscription request.\nSent by MAILER-DAEMON@amazonses.com\nbounce@amazonses.com'
+  assert.equal(parseBounceRecipient(body), null)
 })
 
 test('stripGroupFooter removes the Google Groups footer only', () => {

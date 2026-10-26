@@ -1,10 +1,13 @@
 import {
   autoReplyReason,
+  BOUNCE_REASONS,
   candidateAddresses,
   getHeader,
   htmlToText,
   looksForwarded,
   parseAddress,
+  parseBounceRecipient,
+  parseForwardedSender,
   parseReferences,
   routeDesk,
   safeFilename,
@@ -191,10 +194,20 @@ export async function processEmail(deps: Deps, emailId: string, addressToDesk: M
     return { status: 'skipped', reason }
   }
 
+  const rawText = email.text?.trim() ? email.text : htmlToText(email.html ?? '')
+
   // Mail loop protection: never turn our own mail, or automatic replies, into tickets.
   if (addressToDesk.has(sender)) return skip('sent from one of our own addresses')
   const auto = autoReplyReason(headers, sender, subject)
-  if (auto) return skip(auto)
+  // A bounce naming a real, identifiable person (e.g. a failed password-reset
+  // delivery) still becomes a ticket — only genuinely unidentifiable noise
+  // (a bare subscription confirmation, etc.) and non-bounce auto-replies
+  // (out-of-office and the like) are dropped outright.
+  let bounceRecipient: { name: string | null; email: string } | null = null
+  if (auto) {
+    if (BOUNCE_REASONS.has(auto)) bounceRecipient = parseBounceRecipient(rawText)
+    if (!bounceRecipient) return skip(auto)
+  }
 
   // Where it was sent: the group's own headers, then To/Cc, then Resend's
   // received_for (which holds the original recipient even when the group has
@@ -214,8 +227,16 @@ export async function processEmail(deps: Deps, emailId: string, addressToDesk: M
   const inReplyTo = parseReferences(getHeader(headers, 'in-reply-to'))[0] ?? null
   const isReply = references.length > 0 || inReplyTo !== null
 
-  let body = stripGroupFooter(email.text?.trim() ? email.text : htmlToText(email.html ?? ''))
+  let body = stripGroupFooter(rawText)
   const forwarded = looksForwarded(subject, body)
+  // Spec section 7, layer 1: a best-effort guess at who a forward or bounce is
+  // really about. A cleanly-parsed forward header is confident enough to use
+  // directly (ingest_inbound assigns it as the reporter outright); a bounce
+  // recipient is a broader, fuzzier scan of the whole body, so it's kept as
+  // a lower-confidence suggestion instead — the reporter still shows as
+  // unverified for an agent to confirm.
+  const detectedSender = forwarded ? parseForwardedSender(body) : bounceRecipient
+  const detectedSenderConfidence = forwarded && detectedSender ? 0.9 : detectedSender ? 0.4 : null
   if (isReply && !forwarded) body = stripQuotedReply(body)
   body = truncateBody(body)
 
@@ -234,6 +255,9 @@ export async function processEmail(deps: Deps, emailId: string, addressToDesk: M
       subject,
       body,
       forwarded,
+      forwarded_sender_name: detectedSender?.name ?? null,
+      forwarded_sender_email: detectedSender?.email ?? null,
+      detected_sender_confidence: detectedSenderConfidence,
       headers: {
         from: getHeader(headers, 'from') || email.from,
         to: getHeader(headers, 'to'),

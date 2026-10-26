@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { signInWithGoogle } from '../lib/auth'
@@ -6,10 +7,17 @@ export default function Home() {
   const { session, profile, loading } = useAuth()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    if (session && profile) {
+      // Dashboard resolves where to go (queue, admin, my-tickets) from the
+      // helpdesk's own roles — not profile.role, shared with license-manager.
+      navigate('/dashboard')
+    }
+  }, [session, profile, navigate])
+
   if (loading) return <LoadingScreen />
 
   if (session && profile) {
-    navigate(profile.role === 'admin' ? '/admin' : '/dashboard')
     return null
   }
 
