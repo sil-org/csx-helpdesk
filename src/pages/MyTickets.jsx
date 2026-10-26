@@ -15,18 +15,30 @@ export default function MyTickets() {
 
   useEffect(() => {
     hd.from('tickets')
-      .select('id, ticket_number, subject, status, updated_at, current_desk:desks!tickets_current_desk_id_fkey(name, theme_accent)')
+      .select('id, ticket_number, subject, status, updated_at, current_desk:desks!tickets_current_desk_id_fkey(name, logo_url, theme_primary)')
       .order('updated_at', { ascending: false })
       .then(({ data, error }) => { if (error) { setError(error.message); setRows([]) } else { setRows(data ?? []) } })
   }, [])
 
+  // Reporters can have tickets across several desks; there's no single
+  // "owning" desk for this list the way there is on one ticket's own page,
+  // so this is a heuristic (spec section 10 only specifies branding for a
+  // ticket's own desk) — the most recently updated ticket's desk, falling
+  // back to the default SIL theme if there are no tickets yet to go by.
+  const color = rows?.[0]?.current_desk?.theme_primary || '#005CB9'
+  const logoUrl = rows?.[0]?.current_desk?.logo_url
+
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: '#F9F5F9' }}>
-      <div className="flex flex-wrap items-center gap-4 px-6 py-3 bg-white border-b" style={{ borderColor: '#E9D7E8' }}>
+    <div className="min-h-screen flex flex-col bg-gray-50">
+      <div className="flex flex-wrap items-center gap-4 px-6 py-3 bg-white border-b border-gray-200">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full text-white flex items-center justify-center font-bold text-sm" style={{ background: '#93358D' }}>
-            {(profile?.display_name || '?')[0]}
-          </div>
+          {logoUrl ? (
+            <img src={logoUrl} alt="" className="h-8 w-auto" />
+          ) : (
+            <div className="w-9 h-9 rounded-full text-white flex items-center justify-center font-bold text-sm" style={{ background: color }}>
+              {(profile?.display_name || '?')[0]}
+            </div>
+          )}
           <div className="text-[17px] font-bold">My tickets</div>
         </div>
         <div className="flex-1" />
@@ -49,8 +61,7 @@ export default function MyTickets() {
           <Link
             key={t.id}
             to={`/my-tickets/${t.ticket_number}`}
-            className="block bg-white border rounded-xl px-5 py-4 hover:border-[#93358D]"
-            style={{ borderColor: '#E9D7E8' }}
+            className="block bg-white border border-gray-200 rounded-xl px-5 py-4 hover:border-gray-400"
           >
             <div className="flex flex-wrap items-center justify-between gap-2.5">
               <div className="text-base font-bold">{t.subject || '(no subject)'}</div>

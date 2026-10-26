@@ -15,7 +15,7 @@ export default function ReporterTicket() {
 
   useEffect(() => {
     hd.from('tickets')
-      .select('id, ticket_number, subject, status, current_desk:desks!tickets_current_desk_id_fkey(name)')
+      .select('id, ticket_number, subject, status, current_desk:desks!tickets_current_desk_id_fkey(name, logo_url, theme_primary)')
       .eq('ticket_number', ticketNumber)
       .maybeSingle()
       .then(async ({ data: t, error }) => {
@@ -32,12 +32,24 @@ export default function ReporterTicket() {
   if (ticket === undefined) return <div className="min-h-screen flex items-center justify-center text-gray-400">Loading&hellip;</div>
   if (ticket === null) return <div className="min-h-screen flex items-center justify-center text-gray-500 text-sm">Ticket not found.</div>
 
+  // Default SIL Blue unless this desk overrides it (spec section 10: the
+  // SIL theme is the default, per-desk colors are the exception).
+  const color = ticket.current_desk?.theme_primary || '#005CB9'
+
   return (
-    <div className="min-h-screen" style={{ background: '#F9F5F9' }}>
-      <div className="px-6 py-3 bg-white border-b" style={{ borderColor: '#E9D7E8' }}>
-        <Link to="/my-tickets" className="text-sm font-semibold" style={{ color: '#6B2169' }}>&larr; My tickets</Link>
+    <div className="min-h-screen bg-gray-50">
+      <div className="flex items-center gap-3 px-6 py-3 bg-white border-b border-gray-200">
+        {ticket.current_desk?.logo_url ? (
+          <img src={ticket.current_desk.logo_url} alt={ticket.current_desk.name} className="h-8 w-auto" />
+        ) : (
+          <span className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ background: color }}>
+            {(ticket.current_desk?.name || '?')[0]}
+          </span>
+        )}
+        <Link to="/my-tickets" className="text-sm font-semibold" style={{ color }}>&larr; My tickets</Link>
       </div>
       <div className="max-w-[760px] w-full mx-auto px-6 py-8 flex flex-col gap-4">
+        {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{error}</div>}
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-sm font-semibold text-gray-500">#{ticket.ticket_number}</span>
           <StatusPill status={ticket.status} label={REPORTER_STATUS_LABEL[ticket.status]} />
@@ -46,7 +58,7 @@ export default function ReporterTicket() {
         <div className="text-sm text-gray-500 -mt-2">{ticket.current_desk?.name}</div>
 
         {messages.map((m) => (
-          <div key={m.id} className="bg-white border rounded-xl p-5 flex flex-col gap-2" style={{ borderColor: '#E9D7E8' }}>
+          <div key={m.id} className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col gap-2">
             <div className="flex justify-between gap-2 text-xs text-gray-500">
               <span className="text-sm font-bold text-gray-900">{m.direction === 'inbound' ? 'You' : 'Help desk'}</span>
               {new Date(m.created_at).toLocaleString()}
