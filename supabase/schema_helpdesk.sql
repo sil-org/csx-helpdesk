@@ -59,10 +59,11 @@ create table if not exists helpdesk.desk_settings (
 -- Singleton row of global defaults, owned by super admins.
 create table if not exists helpdesk.global_settings (
   id boolean primary key default true check (id),
-  deleted_retention_days int not null default 60 check (deleted_retention_days > 0),
+  deleted_retention_days int not null default 30 check (deleted_retention_days > 0),
   attachment_retention_days int not null default 60 check (attachment_retention_days > 0)
 );
 insert into helpdesk.global_settings (id) values (true) on conflict do nothing;
+update helpdesk.global_settings set deleted_retention_days = 30 where id = true;
 
 -- ── People & roles ───────────────────────────────────────────────────────
 
@@ -179,6 +180,15 @@ create table if not exists helpdesk.tickets (
 alter table helpdesk.tickets add column if not exists detected_sender_name text;
 alter table helpdesk.tickets add column if not exists detected_sender_email text
   check (detected_sender_email = lower(detected_sender_email));
+
+-- True merge (not the never-silently-merged ticket_links — that's for
+-- related-but-distinct tickets; this is for "these are actually the same
+-- issue"). A merged-away ticket is closed and marked here; a later reply
+-- threading onto it is redirected to the survivor instead (ingest_inbound).
+alter table helpdesk.tickets add column if not exists merged_into_ticket_id uuid
+  references helpdesk.tickets(id);
+create index if not exists tickets_merged_into_idx on helpdesk.tickets(merged_into_ticket_id)
+  where merged_into_ticket_id is not null;
 
 create index if not exists tickets_current_desk_id_idx on helpdesk.tickets(current_desk_id);
 create index if not exists tickets_status_idx on helpdesk.tickets(status);
@@ -634,6 +644,70 @@ $$;
 revoke all on function helpdesk.reassign_reporter(uuid, text, text) from public;
 grant execute on function helpdesk.reassign_reporter(uuid, text, text) to authenticated;
 
+-- ── RPC: true merge (distinct from ticket_links — see spec decision 8) ───
+-- Moves every message, attachment (via message_id, no row change needed),
+-- event, CC/follower, and link from each losing ticket onto the survivor,
+-- then closes the losing ticket and marks merged_into_ticket_id so a later
+-- reply threading onto it is redirected (ingest_inbound) instead of landing
+-- on a dead ticket nobody's watching.
+
+create or replace function helpdesk.merge_tickets(p_ticket_ids uuid[], p_survivor_id uuid)
+returns void language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_id uuid;
+  v_survivor_number bigint;
+begin
+  if p_survivor_id is null or not (p_survivor_id = any(p_ticket_ids)) then
+    raise exception 'survivor must be one of the selected tickets';
+  end if;
+  if array_length(p_ticket_ids, 1) < 2 then
+    raise exception 'need at least two tickets to merge';
+  end if;
+
+  foreach v_id in array p_ticket_ids loop
+    if not helpdesk.can_work_ticket(v_id) then
+      raise exception 'not allowed: must be able to work every selected ticket';
+    end if;
+  end loop;
+
+  select ticket_number into v_survivor_number from helpdesk.tickets where id = p_survivor_id;
+
+  foreach v_id in array p_ticket_ids loop
+    continue when v_id = p_survivor_id;
+
+    update helpdesk.ticket_messages set ticket_id = p_survivor_id where ticket_id = v_id;
+    update helpdesk.ticket_events set ticket_id = p_survivor_id where ticket_id = v_id;
+
+    insert into helpdesk.ticket_participants (ticket_id, email, type, profile_id)
+    select p_survivor_id, email, type, profile_id from helpdesk.ticket_participants where ticket_id = v_id
+    on conflict (ticket_id, email) do nothing;
+    delete from helpdesk.ticket_participants where ticket_id = v_id;
+
+    -- Any existing link to/from a losing ticket now points at the survivor.
+    update helpdesk.ticket_links set ticket_id = p_survivor_id
+      where ticket_id = v_id and linked_ticket_id <> p_survivor_id;
+    update helpdesk.ticket_links set linked_ticket_id = p_survivor_id
+      where linked_ticket_id = v_id and ticket_id <> p_survivor_id;
+    delete from helpdesk.ticket_links where ticket_id = v_id or linked_ticket_id = v_id;
+
+    update helpdesk.tickets
+    set status = 'closed', merged_into_ticket_id = p_survivor_id
+    where id = v_id;
+
+    insert into helpdesk.ticket_events (ticket_id, event_type, actor_profile_id, to_value, note)
+    values (v_id, 'merged', public.current_profile_id(), p_survivor_id::text,
+            'merged into #' || v_survivor_number);
+  end loop;
+
+  insert into helpdesk.ticket_events (ticket_id, event_type, actor_profile_id, note)
+  values (p_survivor_id, 'merge_received', public.current_profile_id(),
+          (array_length(p_ticket_ids, 1) - 1) || ' ticket(s) merged into this one');
+end;
+$$;
+
+revoke all on function helpdesk.merge_tickets(uuid[], uuid) from public;
+grant execute on function helpdesk.merge_tickets(uuid[], uuid) to authenticated;
+
 -- ── RPC: record one inbound email (used by the helpdesk-ingest function) ─
 -- One transaction: dedupe, find/create requester, thread onto a ticket or
 -- open a new one, reopen on reply, store the message, mark the address as
@@ -1021,6 +1095,30 @@ select cron.schedule(
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'x-helpdesk-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'helpdesk_kb_refresh_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $cron$
+);
+
+-- ── Daily purge of expired soft-deleted tickets ──────────────────────────
+-- Spec decision 17: deleted tickets and their attachments are purged after
+-- a retention window (default 30 days, desk_settings can override). Same
+-- one-time setup pattern as the KB refresh job above —
+--   supabase secrets set HELPDESK_PURGE_SECRET=<value>   (edge function)
+--   select vault.create_secret('<value>', 'helpdesk_purge_secret');  (SQL editor)
+
+select cron.unschedule(jobid) from cron.job where jobname = 'helpdesk-purge-deleted-tickets';
+
+select cron.schedule(
+  'helpdesk-purge-deleted-tickets',
+  '41 3 * * *', -- once daily, off the hour (staggered from the KB refresh job)
+  $cron$
+  select net.http_post(
+    url := 'https://lxomebvymgolbzgkxqgu.supabase.co/functions/v1/purge-deleted-tickets',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-helpdesk-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'helpdesk_purge_secret')
     ),
     body := '{}'::jsonb
   );

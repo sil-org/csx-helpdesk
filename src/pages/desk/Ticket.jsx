@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import DeskHeader from '../../components/DeskHeader'
 import StatusPill from '../../components/StatusPill'
 import { useAuth } from '../../context/AuthContext'
@@ -43,7 +43,7 @@ export default function Ticket() {
 
   async function reload() {
     const { data: t, error: tErr } = await hd.from('tickets')
-      .select('*, requester:requesters(id, display_name, email)')
+      .select('*, requester:requesters(id, display_name, email), merged_into:tickets!tickets_merged_into_ticket_id_fkey(ticket_number)')
       .eq('ticket_number', ticketNumber)
       .maybeSingle()
     if (tErr) { setError(tErr.message); setTicket(null); return }
@@ -194,6 +194,16 @@ export default function Ticket() {
 
           {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{error}</div>}
 
+          {ticket.merged_into_ticket_id && (
+            <div className="bg-gray-100 border border-gray-300 rounded-xl p-4 text-sm text-gray-700">
+              Merged into{' '}
+              <Link to={`/d/${slug}/t/${ticket.merged_into?.ticket_number}`} className="font-semibold text-brand hover:text-brand-dark">
+                #{ticket.merged_into?.ticket_number}
+              </Link>
+              . Everything here moved there — reply on that ticket instead.
+            </div>
+          )}
+
           {messages.map((m) => (
             <div
               key={m.id}
@@ -214,7 +224,7 @@ export default function Ticket() {
             </div>
           ))}
 
-          {draft && (
+          {!ticket.merged_into_ticket_id && draft && (
             <div className="rounded-xl border border-[#C9B8E8] bg-[#F4EFFB] p-5 flex flex-col gap-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold tracking-wider uppercase text-[#5B3A9E]">AI draft</span>
@@ -230,45 +240,47 @@ export default function Ticket() {
             </div>
           )}
 
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="flex gap-2 border-b border-gray-200 px-2">
-              <button
-                onClick={() => setMode('reply')}
-                className={`min-h-[44px] px-5 border-b-[3px] text-sm font-semibold ${mode === 'reply' ? 'border-brand text-gray-900' : 'border-transparent text-gray-500'}`}
-              >
-                Reply to reporter
-              </button>
-              <button
-                onClick={() => setMode('note')}
-                className={`min-h-[44px] px-5 border-b-[3px] text-sm font-semibold ${mode === 'note' ? 'border-[#7a4a00] text-[#5c3700]' : 'border-transparent text-gray-500'}`}
-              >
-                Internal note
-              </button>
-            </div>
-            <div className="p-4 flex flex-col gap-3" style={{ background: isNote ? '#FFF8E8' : '#fff' }}>
-              <div className="text-sm font-bold" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
-                {isNote ? 'Internal note. Only agents on this desk will see this.' : 'Public reply. The reporter and CCs will receive this by email.'}
-              </div>
-              <textarea
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                placeholder={isNote ? 'Write a note for your team...' : 'Write your reply to the reporter...'}
-                className="min-h-[120px] p-3 border border-gray-300 rounded-lg text-[15px] resize-y"
-              />
-              <div className="flex flex-wrap items-center gap-3 justify-between">
-                <div className="text-xs" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
-                  {isNote ? 'Not emailed to anyone.' : `Sends from the ${desk.name} address.`}
-                </div>
+          {!ticket.merged_into_ticket_id && (
+            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="flex gap-2 border-b border-gray-200 px-2">
                 <button
-                  onClick={sendMessage}
-                  disabled={sending || !body.trim()}
-                  className={`min-h-[44px] px-4 rounded-lg font-semibold text-sm disabled:opacity-50 ${isNote ? 'bg-[#7a4a00] text-white' : 'bg-brand text-white hover:bg-brand-dark'}`}
+                  onClick={() => setMode('reply')}
+                  className={`min-h-[44px] px-5 border-b-[3px] text-sm font-semibold ${mode === 'reply' ? 'border-brand text-gray-900' : 'border-transparent text-gray-500'}`}
                 >
-                  {sending ? 'Sending…' : isNote ? 'Add internal note' : 'Send reply'}
+                  Reply to reporter
+                </button>
+                <button
+                  onClick={() => setMode('note')}
+                  className={`min-h-[44px] px-5 border-b-[3px] text-sm font-semibold ${mode === 'note' ? 'border-[#7a4a00] text-[#5c3700]' : 'border-transparent text-gray-500'}`}
+                >
+                  Internal note
                 </button>
               </div>
+              <div className="p-4 flex flex-col gap-3" style={{ background: isNote ? '#FFF8E8' : '#fff' }}>
+                <div className="text-sm font-bold" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
+                  {isNote ? 'Internal note. Only agents on this desk will see this.' : 'Public reply. The reporter and CCs will receive this by email.'}
+                </div>
+                <textarea
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  placeholder={isNote ? 'Write a note for your team...' : 'Write your reply to the reporter...'}
+                  className="min-h-[120px] p-3 border border-gray-300 rounded-lg text-[15px] resize-y"
+                />
+                <div className="flex flex-wrap items-center gap-3 justify-between">
+                  <div className="text-xs" style={{ color: isNote ? '#5c3700' : '#034D8A' }}>
+                    {isNote ? 'Not emailed to anyone.' : `Sends from the ${desk.name} address.`}
+                  </div>
+                  <button
+                    onClick={sendMessage}
+                    disabled={sending || !body.trim()}
+                    className={`min-h-[44px] px-4 rounded-lg font-semibold text-sm disabled:opacity-50 ${isNote ? 'bg-[#7a4a00] text-white' : 'bg-brand text-white hover:bg-brand-dark'}`}
+                  >
+                    {sending ? 'Sending…' : isNote ? 'Add internal note' : 'Send reply'}
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="flex-1 min-w-[280px] max-w-[380px] flex flex-col gap-4">
