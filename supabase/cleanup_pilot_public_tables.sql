@@ -1,0 +1,24 @@
+-- OPTIONAL, MANUAL, DESTRUCTIVE. Only for projects where the EARLIER version of
+-- schema_helpdesk.sql was applied (it created these tables in `public`).
+-- The new schema lives in `helpdesk` and does not need any of this; these
+-- objects are just left behind.
+--
+-- Before running anything below:
+--   1. Confirm the data in them is pilot test data (select count(*) from public.tickets; ...).
+--   2. Take a backup.
+--   3. Do NOT touch public.corpus_documents or the `vector` extension: the
+--      embed-document function still uses them until the corpus moves in the
+--      RAG phase.
+--
+-- Uncomment and run deliberately, statement by statement.
+
+-- drop table if exists public.ticket_links;
+-- drop table if exists public.ticket_events;
+-- drop table if exists public.ticket_messages;
+-- drop table if exists public.tickets cascade;       -- cascade drops corpus_documents.source_ticket_id's FK only
+-- drop table if exists public.requesters;
+-- drop table if exists public.agent_desks;
+-- drop table if exists public.desk_settings;
+-- drop table if exists public.desks cascade;         -- cascade drops corpus_documents.source_desk_id's FK only
+-- drop type  if exists public.ticket_status;
+-- drop function if exists public.is_desk_agent(uuid);

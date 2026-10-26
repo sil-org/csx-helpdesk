@@ -8,23 +8,23 @@ Built on [`sil-app-template`](https://github.com/kode-monki/sil-app-template) �
 
 ## Stack
 
-React + Vite + Tailwind, Supabase (Postgres/Auth), Gmail API per-mailbox OAuth for inbound/outbound email, Voyage AI embeddings + `pgvector` for RAG, Claude API for draft generation. Deployed to AWS S3/CloudFront via GitHub Actions.
+React + Vite + Tailwind, Supabase (Postgres/Auth), Resend (inbound webhooks; senders keep using their usual @sil.org addresses) for inbound email, Voyage AI embeddings + `pgvector` for RAG, Claude API for draft generation. Deployed to AWS S3/CloudFront via GitHub Actions.
 
 ## Status
 
 Repo scaffold only. Built so far:
 - Vite/React app shell (from `sil-app-template`): Google OAuth restricted to `sil.org` (enforced in `resolve_profile()`, not just client-side), `profiles`/`linked_accounts` identity model, role-based route guards, SIL branding
-- Draft Supabase schema split in two: `supabase/schema.sql` is the template's auth kernel unmodified (except the sil.org check is enabled, scoped to new-profile creation only — see account linking below); `supabase/schema_helpdesk.sql` adds the help-desk entities from brief Section 3 — `desks`, `desk_settings`, `agent_desks`, `requesters`, `tickets`, `ticket_messages`, `ticket_events`, `ticket_links`, `corpus_documents` — all referencing `profiles(id)`, not `auth.users`
+- Supabase schema in two files: `supabase/schema.sql` is the template's auth kernel (shared with license-manager; the sil.org check is enabled, scoped to new-profile creation only — see account linking below); `supabase/schema_helpdesk.sql` is the help desk, in its own Postgres schema `helpdesk` so the app can be split out later — desks and per-desk branding, desk addresses and mailboxes, requesters, tickets (seven statuses), messages, attachments, participants, an audit log, and role-aware row-level security for super admins, desk admins, agents and reporters (implements `docs/HELPDESK_SPEC.md` sections 3-6). Corpus/AI-draft tables come with that phase. Access rules are covered by SQL tests in `supabase/tests/`
 - `/account` page for staff to link a personal Google account (e.g. a personal Gmail) as backup sign-in access, in case they ever lose access to their SIL email
 - Stub `embed-document` edge function (`supabase/functions/embed-document/`) that embeds a corpus document via Voyage AI — gated on `VOYAGE_TRAINING_OPT_OUT_CONFIRMED` (see below)
-- Pilot `ingest-email` edge function (`supabase/functions/ingest-email/`) that turns inbound mail into tickets — see the BTC-alias pilot note below
+- `helpdesk-inbound` edge function (`supabase/functions/helpdesk-inbound/`): receives Resend's `email.received` webhook (signature-checked), fetches the email, routes it to a desk by address, threads replies, reopens tickets on reply, strips group footers and quoted history, stores attachments, skips automatic replies, and parks unroutable mail. Receive-only for now (sends nothing). `npm run test:inbound` runs its unit tests; setup is `SETUP.md` step 9
 - `.github/workflows/deploy.yml` — builds + deploys the frontend to S3/CloudFront and edge functions to Supabase on push to `main`
 
-Not started: ticket UI beyond the placeholder, RAG retrieval, AWS-ticket automation logging, migration tooling, a recurring trigger for `ingest-email` (it currently only runs when invoked manually). Per the brief's own recommendation, hold off on AWS-ticket integration and migration tooling until desk participation is confirmed.
+Not started: ticket UI beyond the placeholder, RAG retrieval, AWS-ticket automation logging, migration tooling, sending email (replies, acknowledgements), real reporter detection on forwards, and the roles/admin UI (the database side exists). `helpdesk-inbound` has not yet been deployed or run against a live Supabase project, and attachment download is untested against real mail. Per the brief's own recommendation, hold off on AWS-ticket integration and migration tooling until desk participation is confirmed.
 
-### Email intake is piloted on a BTC alias, not sil.org — temporary
+### Email intake: Resend behind the existing @sil.org addresses
 
-sil.org MX record access isn't available yet, so `ingest-email` polls `helpdesk-test@btconference.org` (an alias on the existing `info@btconference.org` Google Workspace mailbox) instead of a real department address, isolated via a Gmail filter + label so it can't touch real BTC conference mail. **This needs to move to a real sil.org alias once DNS access is sorted** — see `SETUP.md` step 9 for the full setup and the reasoning behind the label-based isolation.
+People keep emailing `helpdesk@sil.org` and the other desk addresses. Each address is a Google Group; a Resend receiving address is added to it as one more hidden member (as YouTrack already is), and Resend's webhook calls `helpdesk-inbound`. Replies will later go out from `@em.sil.org` (already verified on Resend) with Reply-To set to the desk's `@sil.org` address. See `SETUP.md` step 9 and `docs/HELPDESK_SPEC.md` section 6.
 
 ### Voyage AI data-training opt-out — required before embedding real ticket content
 
