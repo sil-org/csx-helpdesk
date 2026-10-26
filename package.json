@@ -10,7 +10,8 @@
     "test:inbound": "node --experimental-strip-types --no-warnings --test supabase/functions/helpdesk-inbound/*.test.ts",
     "test:draft": "node --experimental-strip-types --no-warnings --test supabase/functions/generate-draft/*.test.ts",
     "test:kb": "node --experimental-strip-types --no-warnings --test supabase/functions/refresh-kb-cache/*.test.ts",
-    "test:notify": "node --experimental-strip-types --no-warnings --test supabase/functions/notify-agent-added/*.test.ts"
+    "test:notify": "node --experimental-strip-types --no-warnings --test supabase/functions/notify-agent-added/*.test.ts",
+    "test:reply": "node --experimental-strip-types --no-warnings --test supabase/functions/send-reply/*.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

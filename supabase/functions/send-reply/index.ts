@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { textToHtml } from './textToHtml.ts'
 
 // Actually sends a ticket reply by email (spec section 6 "Sending"). Called
 // directly from the agent's browser right after the reply is inserted into
@@ -97,6 +98,7 @@ Deno.serve(async (req) => {
         reply_to: replyAddress.address,
         subject,
         text: msg.body,
+        html: textToHtml(msg.body),
         headers,
       }),
     })
