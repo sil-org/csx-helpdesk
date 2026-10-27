@@ -425,22 +425,20 @@ see `supabase/tests/README.md`.
 
 ---
 
-## Testing-phase: email me on every new ticket
+## New-ticket alerts
 
-`helpdesk-inbound` emails a short alert whenever a brand-new ticket is created
-(replies to existing tickets don't trigger it). It's off until you set:
-
-```bash
-supabase secrets set HELPDESK_NEW_TICKET_NOTIFY=you@sil.org   # comma-separate for several
-```
-
-It also needs `HELPDESK_RESEND_SENDING_API_KEY` and `HELPDESK_APP_URL` (already
-used by `notify-agent-added`). The frontend is currently hosted on Amplify at a
-temporary URL, so:
+`helpdesk-inbound` emails every agent and admin on a desk whenever a brand-new
+ticket is created on it (replies to existing tickets don't trigger it). Each
+person gets their own message. It needs `HELPDESK_RESEND_SENDING_API_KEY` and
+`HELPDESK_APP_URL` (also used by `notify-agent-added`); the frontend is
+currently on Amplify, so:
 
 ```bash
 supabase secrets set HELPDESK_APP_URL=https://main.d3lqctg50qa0pq.amplifyapp.com
 ```
 
-Update that secret when a real domain replaces the Amplify URL. Redeploy: `supabase functions deploy helpdesk-inbound --no-verify-jwt`.
-Remove the secret (`supabase secrets unset HELPDESK_NEW_TICKET_NOTIFY`) to turn it off.
+Update that secret when a real domain replaces the Amplify URL.
+
+Optionally, `HELPDESK_NEW_TICKET_NOTIFY=a@sil.org,b@sil.org` adds extra
+recipients on every desk (e.g. someone who isn't an agent). Leave it unset
+otherwise.

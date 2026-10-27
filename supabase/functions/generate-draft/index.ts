@@ -26,7 +26,10 @@ Deno.serve(async (req) => {
 
   try {
     const apiKey = Deno.env.get('HELPDESK_ANTHROPIC_API_KEY')
-    if (!apiKey) return json({ error: 'HELPDESK_ANTHROPIC_API_KEY is not configured' }, 500)
+    if (!apiKey) {
+      console.error('generate-draft failed: HELPDESK_ANTHROPIC_API_KEY is not configured')
+      return json({ error: 'HELPDESK_ANTHROPIC_API_KEY is not configured' }, 500)
+    }
 
     const { ticket_id }: GenerateDraftRequest = await req.json()
     if (!ticket_id) return json({ error: 'Missing required field: ticket_id' }, 400)
@@ -92,9 +95,11 @@ Deno.serve(async (req) => {
         model: ANTHROPIC_MODEL,
         max_tokens: 1500,
         system,
-        messages: [{ role: 'user', content: userMessage }],
+        // This model rejects forced tool_choice (400), so ask for the tool in
+        // the prompt and let the model call it under 'auto'.
+        messages: [{ role: 'user', content: `${userMessage}\n\nRespond by calling the submit_draft tool. Do not write a reply as plain text.` }],
         tools: [SUBMIT_DRAFT_TOOL],
-        tool_choice: { type: 'tool', name: 'submit_draft' },
+        tool_choice: { type: 'auto' },
       }),
     })
     if (!anthropicRes.ok) {
@@ -112,6 +117,7 @@ Deno.serve(async (req) => {
       .eq('ticket_id', ticket_id).is('superseded_at', null)
 
     if (!decision.needs_draft || !decision.reply) {
+      console.log('generate-draft skipped:', decision.skip_reason ?? 'model decided no draft was needed')
       return json({ skipped: decision.skip_reason ?? 'model decided no draft was needed' })
     }
 
@@ -125,6 +131,7 @@ Deno.serve(async (req) => {
 
     return json({ drafted: true })
   } catch (err) {
+    console.error('generate-draft failed:', err.message)
     return json({ error: err.message }, 500)
   }
 })

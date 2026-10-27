@@ -12,6 +12,6 @@ export function buildNewTicketEmail(opts: {
   const subject = (opts.subject || '').trim() || '(no subject)'
   return {
     subject: `[${opts.deskName}] ${label}: ${subject}`,
-    text: `A new ticket arrived on the ${opts.deskName}.\n\nSubject: ${subject}\nFrom: ${opts.senderEmail || 'unknown'}\n\n${opts.link}\n\nYou're getting this because new-ticket notifications are switched on for testing.`,
+    text: `A new ticket arrived on the ${opts.deskName}.\n\nSubject: ${subject}\nFrom: ${opts.senderEmail || 'unknown'}\n\n${opts.link}\n\nYou're getting this because you're an agent on this desk.`,
   }
 }
