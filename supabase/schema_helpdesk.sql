@@ -274,6 +274,19 @@ create table if not exists helpdesk.ticket_links (
   primary key (ticket_id, linked_ticket_id)
 );
 
+-- A named queue filter an agent saves for themselves (text + status chip +
+-- assignee), scoped to one desk since the assignee value is desk-specific.
+-- Private: RLS only ever shows a profile its own rows.
+create table if not exists helpdesk.saved_searches (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  desk_id uuid not null references helpdesk.desks(id) on delete cascade,
+  name text not null,
+  query jsonb not null, -- { text?, status?, assignee?: 'all' | 'mine' | 'unassigned' | <profile_id> }
+  created_at timestamptz not null default now()
+);
+create index if not exists saved_searches_profile_desk_idx on helpdesk.saved_searches(profile_id, desk_id);
+
 -- ── AI drafts (spec section 11) ───────────────────────────────────────────
 
 -- Never sent itself; the compose box starts from one of these and an agent
@@ -936,6 +949,7 @@ alter table helpdesk.ingest_runs enable row level security;
 alter table helpdesk.ingest_log enable row level security;
 alter table helpdesk.ticket_drafts enable row level security;
 alter table helpdesk.kb_cache enable row level security;
+alter table helpdesk.saved_searches enable row level security;
 
 -- desks: branding is readable by any signed-in user (reporters see the
 -- desk that owns their ticket); only super admins create/delete desks.
@@ -1080,6 +1094,17 @@ drop policy if exists ticket_links_delete on helpdesk.ticket_links;
 create policy ticket_links_delete on helpdesk.ticket_links for delete to authenticated
   using (helpdesk.can_work_ticket(ticket_id));
 
+-- saved_searches: strictly private — a profile only ever sees/touches its own.
+drop policy if exists saved_searches_select on helpdesk.saved_searches;
+create policy saved_searches_select on helpdesk.saved_searches for select to authenticated
+  using (profile_id = public.current_profile_id());
+drop policy if exists saved_searches_insert on helpdesk.saved_searches;
+create policy saved_searches_insert on helpdesk.saved_searches for insert to authenticated
+  with check (profile_id = public.current_profile_id() and helpdesk.is_desk_agent(desk_id));
+drop policy if exists saved_searches_delete on helpdesk.saved_searches;
+create policy saved_searches_delete on helpdesk.saved_searches for delete to authenticated
+  using (profile_id = public.current_profile_id());
+
 -- ingestion bookkeeping: super admins only for now.
 drop policy if exists ingest_runs_select on helpdesk.ingest_runs;
 create policy ingest_runs_select on helpdesk.ingest_runs for select to authenticated
@@ -1129,6 +1154,7 @@ grant update (status, assignee_profile_id, paused_until, sensitive, subject) on 
 grant insert on helpdesk.ticket_messages to authenticated;
 grant insert, delete on helpdesk.ticket_participants to authenticated;
 grant insert, delete on helpdesk.ticket_links to authenticated;
+grant insert, delete on helpdesk.saved_searches to authenticated;
 
 -- An agent may only dismiss a draft (superseded_at); the content itself is
 -- generate-draft's (service_role gets full access via the earlier blanket grant).

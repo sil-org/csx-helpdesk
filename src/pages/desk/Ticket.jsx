@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import DeskHeader from '../../components/DeskHeader'
+import AppLayout from '../../components/AppLayout'
 import StatusPill from '../../components/StatusPill'
 import { useAuth } from '../../context/AuthContext'
 import { useHelpdesk } from '../../context/HelpdeskContext'
+import { getLinks } from '../../navLinks'
 import { hd, profilesByIds, relativeTime, STATUS_LABEL } from '../../lib/helpdesk'
 import { supabase } from '../../lib/supabase'
 
@@ -151,6 +152,7 @@ export default function Ticket() {
   if (!desk) return <NotFound reason={`You don't have access to a desk called "${slug}".`} />
   if (ticket === null) return <NotFound reason={`Ticket #${ticketNumber} wasn't found, or isn't on this desk.`} />
 
+  const isDeskAdmin = isSuperAdmin || agentDesks.find((d) => d.slug === slug)?.role === 'admin'
   const isNote = mode === 'note'
 
   async function sendMessage() {
@@ -256,8 +258,7 @@ export default function Ticket() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      <DeskHeader desk={desk} backTo={`/d/${slug}`} />
+    <AppLayout desk={desk} links={getLinks({ desk, isDeskAdmin, isSuperAdmin })}>
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 bg-gray-900 text-white text-sm font-medium px-4 py-2.5 rounded-lg shadow-lg">
           {toast}
@@ -266,6 +267,10 @@ export default function Ticket() {
 
       <div className="flex flex-wrap gap-6 p-6 items-start">
         <div className="flex-[999_1_600px] min-w-0 flex flex-col gap-4">
+          <Link to={`/d/${slug}`} className="text-sm font-semibold text-brand hover:text-brand-dark self-start">
+            &larr; Back to queue
+          </Link>
+
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-sm font-semibold text-gray-500">#{ticket.ticket_number}</span>
@@ -639,7 +644,7 @@ export default function Ticket() {
           </Card>
         </div>
       </div>
-    </div>
+    </AppLayout>
   )
 }
 
