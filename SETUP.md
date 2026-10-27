@@ -435,5 +435,12 @@ supabase secrets set HELPDESK_NEW_TICKET_NOTIFY=you@sil.org   # comma-separate f
 ```
 
 It also needs `HELPDESK_RESEND_SENDING_API_KEY` and `HELPDESK_APP_URL` (already
-used by `notify-agent-added`). Redeploy: `supabase functions deploy helpdesk-inbound --no-verify-jwt`.
+used by `notify-agent-added`). The frontend is currently hosted on Amplify at a
+temporary URL, so:
+
+```bash
+supabase secrets set HELPDESK_APP_URL=https://main.d3lqctg50qa0pq.amplifyapp.com
+```
+
+Update that secret when a real domain replaces the Amplify URL. Redeploy: `supabase functions deploy helpdesk-inbound --no-verify-jwt`.
 Remove the secret (`supabase secrets unset HELPDESK_NEW_TICKET_NOTIFY`) to turn it off.
