@@ -95,9 +95,11 @@ Deno.serve(async (req) => {
         model: ANTHROPIC_MODEL,
         max_tokens: 1500,
         system,
-        messages: [{ role: 'user', content: userMessage }],
+        // This model rejects forced tool_choice (400), so ask for the tool in
+        // the prompt and let the model call it under 'auto'.
+        messages: [{ role: 'user', content: `${userMessage}\n\nRespond by calling the submit_draft tool. Do not write a reply as plain text.` }],
         tools: [SUBMIT_DRAFT_TOOL],
-        tool_choice: { type: 'tool', name: 'submit_draft' },
+        tool_choice: { type: 'auto' },
       }),
     })
     if (!anthropicRes.ok) {
