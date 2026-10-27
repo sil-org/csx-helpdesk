@@ -422,3 +422,25 @@ anyone on the internet from posting fake mail to it.
 `npm run test:inbound` runs the function's unit tests (Node 22+), including
 the real group-delivered mail shape. The database access-rule tests are SQL;
 see `supabase/tests/README.md`.
+
+---
+
+## Testing-phase: email me on every new ticket
+
+`helpdesk-inbound` emails a short alert whenever a brand-new ticket is created
+(replies to existing tickets don't trigger it). It's off until you set:
+
+```bash
+supabase secrets set HELPDESK_NEW_TICKET_NOTIFY=you@sil.org   # comma-separate for several
+```
+
+It also needs `HELPDESK_RESEND_SENDING_API_KEY` and `HELPDESK_APP_URL` (already
+used by `notify-agent-added`). The frontend is currently hosted on Amplify at a
+temporary URL, so:
+
+```bash
+supabase secrets set HELPDESK_APP_URL=https://main.d3lqctg50qa0pq.amplifyapp.com
+```
+
+Update that secret when a real domain replaces the Amplify URL. Redeploy: `supabase functions deploy helpdesk-inbound --no-verify-jwt`.
+Remove the secret (`supabase secrets unset HELPDESK_NEW_TICKET_NOTIFY`) to turn it off.
