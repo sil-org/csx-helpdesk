@@ -112,13 +112,12 @@ function background(p: Promise<unknown>) {
   if (runtime) runtime.waitUntil(p)
 }
 
-// Testing-phase alert: emails HELPDESK_NEW_TICKET_NOTIFY (comma-separated
-// addresses) whenever a brand-new ticket is created. Unset = off. Never
-// throws: a failed alert must not affect ingestion or make Resend retry.
+// Emails every agent and admin on the ticket's desk when a brand-new ticket
+// is created, plus any extra addresses in HELPDESK_NEW_TICKET_NOTIFY
+// (comma-separated, optional). Never throws: a failed alert must not affect
+// ingestion or make Resend retry.
 async function notifyNewTicket(db: Db, ticketId: string) {
   try {
-    const to = (Deno.env.get('HELPDESK_NEW_TICKET_NOTIFY') ?? '').split(',').map((a) => a.trim()).filter(Boolean)
-    if (!to.length) return
     const sendKey = Deno.env.get('HELPDESK_RESEND_SENDING_API_KEY')
     const appUrl = Deno.env.get('HELPDESK_APP_URL')
     if (!sendKey || !appUrl) {
@@ -126,9 +125,28 @@ async function notifyNewTicket(db: Db, ticketId: string) {
       return
     }
     const { data: t, error } = await db.from('tickets')
-      .select('ticket_number, subject, sender_email, desks:desks!current_desk_id(name, slug)').eq('id', ticketId).maybeSingle()
+      .select('ticket_number, subject, sender_email, current_desk_id, desks:desks!current_desk_id(name, slug)')
+      .eq('id', ticketId).maybeSingle()
     if (error || !t) throw new Error(error?.message ?? 'ticket not found')
     const desk = (t as { desks: { name: string; slug: string } }).desks
+
+    const { data: members, error: mErr } = await db.from('agent_desks').select('profile_id').eq('desk_id', t.current_desk_id)
+    if (mErr) throw mErr
+    const ids = (members ?? []).map((m: { profile_id: string }) => m.profile_id)
+    const emails: string[] = []
+    if (ids.length) {
+      // profiles lives in public, not the helpdesk schema this client targets.
+      const pub = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
+        auth: { persistSession: false },
+      })
+      const { data: profiles, error: pErr } = await pub.from('profiles').select('primary_email').in('id', ids)
+      if (pErr) throw pErr
+      for (const p of profiles ?? []) if (p.primary_email) emails.push(p.primary_email)
+    }
+    for (const a of (Deno.env.get('HELPDESK_NEW_TICKET_NOTIFY') ?? '').split(',')) if (a.trim()) emails.push(a.trim())
+    const to = [...new Set(emails.map((e) => e.toLowerCase()))]
+    if (!to.length) return
+
     const { subject, text } = buildNewTicketEmail({
       ticketNumber: t.ticket_number,
       subject: t.subject,
@@ -136,12 +154,17 @@ async function notifyNewTicket(db: Db, ticketId: string) {
       deskName: desk.name,
       link: `${appUrl.replace(/\/$/, '')}/d/${desk.slug}/t/${t.ticket_number}`,
     })
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org', to, subject, text }),
-    })
-    if (!res.ok) throw new Error(`Resend send failed: ${res.status} ${await res.text()}`)
+    // One message per recipient so agents don't see each other's addresses
+    // and one bad address can't block the rest.
+    const from = Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org'
+    await Promise.all(to.map(async (addr) => {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from, to: addr, subject, text }),
+      })
+      if (!res.ok) console.error(`new-ticket notify to ${addr} failed: ${res.status} ${await res.text()}`)
+    }))
   } catch (err) {
     console.error('new-ticket notify failed:', (err as Error).message)
   }
