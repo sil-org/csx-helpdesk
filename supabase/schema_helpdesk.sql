@@ -708,6 +708,76 @@ $$;
 revoke all on function helpdesk.merge_tickets(uuid[], uuid) from public;
 grant execute on function helpdesk.merge_tickets(uuid[], uuid) to authenticated;
 
+-- ── RPC: desk transfer (spec section 9, decisions 5/6/16) ─────────────────
+-- current_desk_id isn't in tickets' column grants (every other path to it is
+-- audited), so this is the only way to move a ticket. Only to a desk that
+-- opted in (decision 5). Resets status to New and clears the assignee — a
+-- transfer hands the ticket to a fresh queue, not a specific person on it —
+-- and grants the sending desk read-only access going forward (decision 6).
+-- tickets_audit logs 'transferred' / 'status_changed' / 'assigned' from the
+-- ordinary column changes below. The reporter's "your ticket moved" email
+-- (decision 16) is sent separately by send-transfer-notice, after this
+-- commits, since a notice about a move that didn't happen is worse than one
+-- that's merely late.
+create or replace function helpdesk.transfer_ticket(p_ticket_id uuid, p_desk_id uuid)
+returns void language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_old_desk uuid;
+begin
+  if not helpdesk.can_work_ticket(p_ticket_id) then
+    raise exception 'not allowed: must be able to work this ticket';
+  end if;
+  if not exists (select 1 from helpdesk.desks where id = p_desk_id and accepts_transfers) then
+    raise exception 'target desk does not accept transfers';
+  end if;
+
+  select current_desk_id into v_old_desk from helpdesk.tickets where id = p_ticket_id;
+  if v_old_desk is null then
+    raise exception 'ticket not found';
+  end if;
+  if v_old_desk = p_desk_id then
+    raise exception 'ticket is already on that desk';
+  end if;
+
+  insert into helpdesk.ticket_desk_access (ticket_id, desk_id) values (p_ticket_id, v_old_desk)
+  on conflict do nothing;
+
+  update helpdesk.tickets
+  set current_desk_id = p_desk_id, status = 'new', assignee_profile_id = null
+  where id = p_ticket_id;
+end;
+$$;
+
+revoke all on function helpdesk.transfer_ticket(uuid, uuid) from public;
+grant execute on function helpdesk.transfer_ticket(uuid, uuid) to authenticated;
+
+-- ── RPC: forward outside and close (spec section 9, decision 7) ───────────
+-- forwarded_to isn't in tickets' column grants either. Closes the ticket and
+-- records who it went to; an external reply reopens it (ingest_inbound
+-- already checks forwarded_to). Called by send-forward-outside only after
+-- the email itself is away, so a ticket is never marked forwarded unless it
+-- actually was.
+create or replace function helpdesk.forward_ticket_outside(p_ticket_id uuid, p_to_email text)
+returns void language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_email text := lower(trim(p_to_email));
+begin
+  if not helpdesk.can_work_ticket(p_ticket_id) then
+    raise exception 'not allowed: must be able to work this ticket';
+  end if;
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'invalid email: %', p_to_email;
+  end if;
+
+  update helpdesk.tickets
+  set status = 'closed', forwarded_to = v_email
+  where id = p_ticket_id;
+end;
+$$;
+
+revoke all on function helpdesk.forward_ticket_outside(uuid, text) from public;
+grant execute on function helpdesk.forward_ticket_outside(uuid, text) to authenticated;
+
 -- ── RPC: record one inbound email (used by the helpdesk-ingest function) ─
 -- One transaction: dedupe, find/create requester, thread onto a ticket or
 -- open a new one, reopen on reply, store the message, mark the address as

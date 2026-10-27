@@ -31,6 +31,16 @@ export default function Ticket() {
   const [toast, setToast] = useState(null)
   const [draft, setDraft] = useState(null)
   const [mergedIntoNumber, setMergedIntoNumber] = useState(null)
+  const [ticketDesk, setTicketDesk] = useState(null)
+  const [deskAgentIds, setDeskAgentIds] = useState([])
+  const [transferDesks, setTransferDesks] = useState([])
+  const [transferTarget, setTransferTarget] = useState('')
+  const [transferConfirming, setTransferConfirming] = useState(false)
+  const [transferring, setTransferring] = useState(false)
+  const [forwardOpen, setForwardOpen] = useState(false)
+  const [forwardEmail, setForwardEmail] = useState('')
+  const [forwardMessage, setForwardMessage] = useState('')
+  const [forwarding, setForwarding] = useState(false)
 
   useEffect(() => {
     if (!toast) return
@@ -59,16 +69,23 @@ export default function Ticket() {
       setMergedIntoNumber(null)
     }
 
-    const [{ data: msgs }, { data: parts }, { data: evts }, { data: fwdLinks }, { data: backLinks }] = await Promise.all([
+    const [{ data: msgs }, { data: parts }, { data: evts }, { data: fwdLinks }, { data: backLinks }, { data: tDesk }, { data: tAgents }, { data: xferDesks }] = await Promise.all([
       hd.from('ticket_messages').select('*').eq('ticket_id', t.id).order('created_at'),
       hd.from('ticket_participants').select('*').eq('ticket_id', t.id).eq('type', 'cc'),
       hd.from('ticket_events').select('*').eq('ticket_id', t.id).order('created_at', { ascending: false }),
       hd.from('ticket_links').select('linked_ticket_id').eq('ticket_id', t.id),
       hd.from('ticket_links').select('ticket_id').eq('linked_ticket_id', t.id),
+      hd.from('desks').select('id, slug, name, accepts_transfers').eq('id', t.current_desk_id).maybeSingle(),
+      hd.from('agent_desks').select('profile_id').eq('desk_id', t.current_desk_id),
+      hd.from('desks').select('id, slug, name').eq('accepts_transfers', true),
     ])
     setMessages(msgs ?? [])
     setParticipants(parts ?? [])
     setEvents(evts ?? [])
+    setTicketDesk(tDesk ?? null)
+    const agentIds = (tAgents ?? []).map((a) => a.profile_id)
+    setDeskAgentIds(agentIds)
+    setTransferDesks((xferDesks ?? []).filter((d) => d.id !== t.current_desk_id))
 
     const linkedIds = [...(fwdLinks ?? []).map((l) => l.linked_ticket_id), ...(backLinks ?? []).map((l) => l.ticket_id)]
     if (linkedIds.length) {
@@ -78,7 +95,7 @@ export default function Ticket() {
       setLinks([])
     }
 
-    const ids = [t.assignee_profile_id, ...(msgs ?? []).map((m) => m.profile_id), ...(evts ?? []).map((e) => e.actor_profile_id)]
+    const ids = [t.assignee_profile_id, ...agentIds, ...(msgs ?? []).map((m) => m.profile_id), ...(evts ?? []).map((e) => e.actor_profile_id)]
     setPeople(await profilesByIds(ids))
 
     const { data: activeDraft } = await hd.from('ticket_drafts')
@@ -174,8 +191,8 @@ export default function Ticket() {
     reload()
   }
 
-  async function assignToMe() {
-    const { error } = await hd.from('tickets').update({ assignee_profile_id: profile.id }).eq('id', ticket.id)
+  async function setAssignee(profileId) {
+    const { error } = await hd.from('tickets').update({ assignee_profile_id: profileId || null }).eq('id', ticket.id)
     if (error) setError(error.message); else reload()
   }
 
@@ -183,6 +200,47 @@ export default function Ticket() {
     const { error } = await hd.from('tickets').update({ status }).eq('id', ticket.id)
     if (error) { setError(error.message); return }
     if (status === 'resolved' || status === 'closed') navigate('/dashboard'); else reload()
+  }
+
+  async function confirmTransfer() {
+    if (!transferTarget) return
+    setTransferring(true)
+    setError(null)
+    const { error } = await hd.rpc('transfer_ticket', { p_ticket_id: ticket.id, p_desk_id: transferTarget })
+    if (error) { setTransferring(false); setError(error.message); return }
+
+    // The move already happened; a failed notice here doesn't undo it, it
+    // just means the reporter wasn't told (surfaced, not retried silently).
+    const { data: { session } } = await supabase.auth.getSession()
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-transfer-notice`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket_id: ticket.id }),
+    })
+    const result = await res.json()
+    if (!res.ok) setError(`Transferred, but the reporter wasn't notified: ${result.error}`)
+
+    setTransferring(false)
+    setTransferConfirming(false)
+    setTransferTarget('')
+    setToast('Ticket transferred')
+    reload()
+  }
+
+  async function forwardOutside() {
+    if (!forwardEmail.trim()) return
+    setForwarding(true)
+    setError(null)
+    const { data: { session } } = await supabase.auth.getSession()
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-forward-outside`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket_id: ticket.id, to_email: forwardEmail.trim(), message: forwardMessage }),
+    })
+    const result = await res.json()
+    setForwarding(false)
+    if (!res.ok) { setError(result.error); return }
+    navigate('/dashboard')
   }
 
   async function addCc() {
@@ -379,39 +437,147 @@ export default function Ticket() {
           <Card>
             <div>
               <Label>Status</Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <StatusPill status={ticket.status} />
-                <select
-                  value={ticket.status}
-                  onChange={(e) => setStatus(e.target.value)}
-                  className="min-h-[36px] text-sm border border-gray-300 rounded px-2"
-                >
-                  {Object.entries(STATUS_LABEL).filter(([k]) => k !== 'deleted').map(([k, label]) => (
-                    <option key={k} value={k}>{label}</option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={ticket.status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="min-h-[36px] w-full text-sm border border-gray-300 rounded-lg px-2"
+              >
+                {Object.entries(STATUS_LABEL).filter(([k]) => k !== 'deleted').map(([k, label]) => (
+                  <option key={k} value={k}>{label}</option>
+                ))}
+              </select>
             </div>
+
             <div>
               <Label>Assignee</Label>
-              <div className="text-sm">
-                {ticket.assignee_profile_id ? (people[ticket.assignee_profile_id]?.display_name ?? '…') : 'Unassigned'}
-                {ticket.assignee_profile_id !== profile.id && (
-                  <button onClick={assignToMe} className="ml-2 font-semibold text-brand">Assign to me</button>
-                )}
-              </div>
+              {deskAgentIds.length <= 1 && (deskAgentIds.length === 0 || ticket.assignee_profile_id === deskAgentIds[0]) ? (
+                <div className="text-sm">
+                  {ticket.assignee_profile_id ? (people[ticket.assignee_profile_id]?.display_name ?? '…') : 'Unassigned'}
+                </div>
+              ) : (
+                <select
+                  value={ticket.assignee_profile_id ?? ''}
+                  onChange={(e) => setAssignee(e.target.value)}
+                  className="min-h-[36px] w-full text-sm border border-gray-300 rounded-lg px-2"
+                >
+                  <option value="">Unassigned</option>
+                  {deskAgentIds.map((id) => (
+                    <option key={id} value={id}>{people[id]?.display_name ?? '…'}</option>
+                  ))}
+                </select>
+              )}
             </div>
+
             <div>
               <Label>Desk</Label>
-              <div className="text-sm mb-2.5">{desk.name}</div>
-              <div className="flex flex-wrap gap-2">
-                <button disabled className="min-h-[40px] px-3 border border-gray-300 rounded-lg text-sm text-gray-400 cursor-not-allowed" title="Transfers land in build-order step 6 (not built yet)">
-                  Transfer to desk
-                </button>
-                <button disabled className="min-h-[40px] px-3 border border-gray-300 rounded-lg text-sm text-gray-400 cursor-not-allowed" title="External forwarding lands in build-order step 6 (not built yet)">
-                  Forward outside &amp; close
+              <div className="text-sm mb-2.5">{ticketDesk?.name ?? desk.name}</div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex-1 min-w-[160px] flex gap-2">
+                  {transferDesks.length === 0 ? (
+                    <div className="text-xs text-gray-500 py-2.5">No desks accept transfers yet.</div>
+                  ) : transferDesks.length === 1 ? (
+                    <button
+                      onClick={() => { setTransferTarget(transferDesks[0].id); setTransferConfirming(true) }}
+                      className="min-h-[40px] px-3 border border-gray-300 rounded-lg text-sm hover:border-brand"
+                    >
+                      Transfer to {transferDesks[0].name}
+                    </button>
+                  ) : (
+                    <>
+                      <select
+                        value={transferTarget}
+                        onChange={(e) => setTransferTarget(e.target.value)}
+                        className="min-h-[40px] flex-1 text-sm border border-gray-300 rounded-lg px-2"
+                      >
+                        <option value="">Transfer to…</option>
+                        {transferDesks.map((d) => (
+                          <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => setTransferConfirming(true)}
+                        disabled={!transferTarget}
+                        className="min-h-[40px] px-3 border border-gray-300 rounded-lg text-sm disabled:opacity-50 hover:border-brand"
+                      >
+                        Transfer
+                      </button>
+                    </>
+                  )}
+                </div>
+                <button
+                  onClick={() => setForwardOpen((o) => !o)}
+                  aria-label={forwardOpen ? 'Close forward panel' : 'Forward outside and close'}
+                  title="Forward outside and close"
+                  className={`flex-none w-10 h-10 flex items-center justify-center rounded-lg border ${forwardOpen ? 'border-brand text-brand' : 'border-gray-300 text-gray-500 hover:border-brand hover:text-brand'}`}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path d="M22 2 11 13" />
+                    <path d="M22 2 15 22l-4-9-9-4Z" />
+                  </svg>
                 </button>
               </div>
+
+              {transferConfirming && (
+                <div className="mt-2 border border-amber-300 bg-amber-50 rounded-lg p-3 text-sm flex flex-col gap-2">
+                  <div>
+                    Transfer to <b>{transferDesks.find((d) => d.id === transferTarget)?.name}</b>? This resets
+                    the status to New and clears the assignee.
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={confirmTransfer}
+                      disabled={transferring}
+                      className="min-h-[36px] px-3 bg-brand text-white rounded-lg text-sm font-semibold disabled:opacity-50"
+                    >
+                      {transferring ? 'Transferring…' : 'Confirm transfer'}
+                    </button>
+                    <button
+                      onClick={() => { setTransferConfirming(false); setTransferTarget('') }}
+                      disabled={transferring}
+                      className="min-h-[36px] px-3 text-sm text-gray-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {forwardOpen && (
+                <div className="mt-2 border border-gray-200 rounded-lg p-3 flex flex-col gap-2">
+                  <label htmlFor="forward-email" className="text-xs text-gray-500">Send the thread to</label>
+                  <input
+                    id="forward-email"
+                    value={forwardEmail}
+                    onChange={(e) => setForwardEmail(e.target.value)}
+                    placeholder="name@example.org"
+                    className="min-h-[40px] px-2.5 border border-gray-300 rounded-lg text-sm"
+                  />
+                  <textarea
+                    value={forwardMessage}
+                    onChange={(e) => setForwardMessage(e.target.value)}
+                    placeholder="Add a message for them (optional)"
+                    className="min-h-[72px] p-2.5 border border-gray-300 rounded-lg text-sm resize-y"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={forwardOutside}
+                      disabled={forwarding || !forwardEmail.trim()}
+                      className="min-h-[40px] px-3 bg-brand text-white rounded-lg text-sm font-semibold disabled:opacity-50"
+                    >
+                      {forwarding ? 'Forwarding…' : 'Forward & close'}
+                    </button>
+                    <button
+                      onClick={() => setForwardOpen(false)}
+                      disabled={forwarding}
+                      className="min-h-[40px] px-3 text-sm text-gray-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className="text-xs text-gray-500 leading-relaxed">Closes the ticket. A reply from them reopens it.</div>
+                </div>
+              )}
             </div>
           </Card>
 
