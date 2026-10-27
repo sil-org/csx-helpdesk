@@ -1,6 +1,7 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { ensureBucket, loadAddressMap, processEmail, ResendClient, verifyWebhook } from './resend.ts'
 import type { Db } from './resend.ts'
+import { buildNewTicketEmail } from './notify.ts'
 
 // Receives Resend's `email.received` webhook and turns the email into a
 // ticket (docs/HELPDESK_SPEC.md section 6). People write to their usual
@@ -75,7 +76,10 @@ Deno.serve(async (req) => {
       emailId,
       await loadAddressMap(db)
     )
-    if (outcome.status === 'ingested') triggerDraft(outcome.ticket_id)
+    if (outcome.status === 'ingested') {
+      triggerDraft(outcome.ticket_id)
+      if (outcome.created) background(notifyNewTicket(db, outcome.ticket_id))
+    }
     return json(outcome)
   } catch (err) {
     console.error('helpdesk-inbound failed:', (err as Error).message)
@@ -98,10 +102,49 @@ function triggerDraft(ticketId: string) {
     body: JSON.stringify({ ticket_id: ticketId }),
   }).catch((err) => console.error('generate-draft trigger failed:', err.message))
 
-  // EdgeRuntime is a Supabase Edge Functions global (not in standard Deno
-  // lib types) that keeps background work alive after the response is sent.
+  background(call)
+}
+
+// EdgeRuntime is a Supabase Edge Functions global (not in standard Deno
+// lib types) that keeps background work alive after the response is sent.
+function background(p: Promise<unknown>) {
   const runtime = (globalThis as { EdgeRuntime?: { waitUntil(p: Promise<unknown>): void } }).EdgeRuntime
-  if (runtime) runtime.waitUntil(call)
+  if (runtime) runtime.waitUntil(p)
+}
+
+// Testing-phase alert: emails HELPDESK_NEW_TICKET_NOTIFY (comma-separated
+// addresses) whenever a brand-new ticket is created. Unset = off. Never
+// throws: a failed alert must not affect ingestion or make Resend retry.
+async function notifyNewTicket(db: Db, ticketId: string) {
+  try {
+    const to = (Deno.env.get('HELPDESK_NEW_TICKET_NOTIFY') ?? '').split(',').map((a) => a.trim()).filter(Boolean)
+    if (!to.length) return
+    const sendKey = Deno.env.get('HELPDESK_RESEND_SENDING_API_KEY')
+    const appUrl = Deno.env.get('HELPDESK_APP_URL')
+    if (!sendKey || !appUrl) {
+      console.error('new-ticket notify skipped: HELPDESK_RESEND_SENDING_API_KEY / HELPDESK_APP_URL not set')
+      return
+    }
+    const { data: t, error } = await db.from('tickets')
+      .select('ticket_number, subject, sender_email, desks:desks!current_desk_id(name, slug)').eq('id', ticketId).maybeSingle()
+    if (error || !t) throw new Error(error?.message ?? 'ticket not found')
+    const desk = (t as { desks: { name: string; slug: string } }).desks
+    const { subject, text } = buildNewTicketEmail({
+      ticketNumber: t.ticket_number,
+      subject: t.subject,
+      senderEmail: t.sender_email,
+      deskName: desk.name,
+      link: `${appUrl.replace(/\/$/, '')}/d/${desk.slug}/t/${t.ticket_number}`,
+    })
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org', to, subject, text }),
+    })
+    if (!res.ok) throw new Error(`Resend send failed: ${res.status} ${await res.text()}`)
+  } catch (err) {
+    console.error('new-ticket notify failed:', (err as Error).message)
+  }
 }
 
 async function sameSecret(a: string, b: string): Promise<boolean> {
