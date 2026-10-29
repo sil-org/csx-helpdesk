@@ -218,9 +218,11 @@ create table if not exists helpdesk.ticket_messages (
   rfc_message_id text,
   in_reply_to text,
   gmail_thread_id text,
+  assignee_notified_at timestamptz, -- set by notify-assignee when it claims this requester message
   created_at timestamptz not null default now(),
   check (not (internal and direction = 'inbound'))
 );
+alter table helpdesk.ticket_messages add column if not exists assignee_notified_at timestamptz;
 create index if not exists ticket_messages_ticket_id_idx on helpdesk.ticket_messages(ticket_id);
 create index if not exists ticket_messages_thread_idx on helpdesk.ticket_messages(mailbox, gmail_thread_id);
 create index if not exists ticket_messages_rfc_idx on helpdesk.ticket_messages(rfc_message_id);

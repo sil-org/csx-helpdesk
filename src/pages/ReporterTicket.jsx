@@ -50,19 +50,23 @@ export default function ReporterTicket() {
     if (!body || sending) return
     setSending(true)
     setError(null)
-    const { error: rpcErr } = await hd.rpc('add_reporter_comment', { p_ticket_id: ticket.id, p_body: body })
+    const { data: messageId, error: rpcErr } = await hd.rpc('add_reporter_comment', { p_ticket_id: ticket.id, p_body: body })
     if (rpcErr) {
       setError(rpcErr.message)
     } else {
       setComment('')
-      // Same as an emailed reply: ask for a fresh AI draft for the agent.
-      // Fire-and-forget — a failure just means no draft, never a lost comment.
-      supabase.auth.getSession().then(({ data: { session } }) =>
-        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/request-draft`, {
+      // Same follow-ups as an emailed reply: a fresh AI draft, and a notice
+      // to the assigned agent. Fire-and-forget — a failure here never loses
+      // the comment (it's already saved).
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        const post = (fn, payload) => fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ticket_id: ticket.id }),
-        })).catch(() => {})
+          body: JSON.stringify(payload),
+        })
+        post('request-draft', { ticket_id: ticket.id }).catch(() => {})
+        post('notify-assignee', { ticket_id: ticket.id, message_id: messageId }).catch(() => {})
+      }).catch(() => {})
       await load()
       endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }

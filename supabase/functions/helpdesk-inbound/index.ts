@@ -79,6 +79,7 @@ Deno.serve(async (req) => {
     if (outcome.status === 'ingested') {
       triggerDraft(outcome.ticket_id)
       if (outcome.created) background(notifyNewTicket(db, outcome.ticket_id))
+      else triggerAssigneeNotice(outcome.ticket_id, outcome.message_id)
     }
     return json(outcome)
   } catch (err) {
@@ -101,6 +102,21 @@ function triggerDraft(ticketId: string) {
     },
     body: JSON.stringify({ ticket_id: ticketId }),
   }).catch((err) => console.error('generate-draft trigger failed:', err.message))
+
+  background(call)
+}
+
+// A requester reply on an existing ticket emails its assigned agent (a no-op
+// when unassigned). Same fire-and-forget shape as triggerDraft.
+function triggerAssigneeNotice(ticketId: string, messageId: string) {
+  const call = fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/notify-assignee`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ticket_id: ticketId, message_id: messageId }),
+  }).catch((err) => console.error('notify-assignee trigger failed:', err.message))
 
   background(call)
 }
