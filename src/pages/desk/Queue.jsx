@@ -169,7 +169,7 @@ export default function Queue() {
     <AppLayout desk={desk} links={getLinks({ desk, isDeskAdmin, isSuperAdmin })}>
       <div className="p-6 max-w-[1400px] flex flex-col gap-4">
           <div className="flex flex-wrap items-baseline gap-3">
-            <h1 className="font-display text-[28px] m-0">Queue</h1>
+            <h1 className="font-display text-[28px] m-0">Tickets</h1>
             <div className="text-sm text-gray-500">{desk.name} &middot; reporter shown is the detected requester, not the sender</div>
           </div>
 

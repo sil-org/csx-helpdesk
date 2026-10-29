@@ -268,7 +268,7 @@ export default function Ticket() {
       <div className="flex flex-wrap gap-6 p-6 items-start">
         <div className="flex-[999_1_600px] min-w-0 flex flex-col gap-4">
           <Link to={`/d/${slug}`} className="text-sm font-semibold text-brand hover:text-brand-dark self-start">
-            &larr; Back to queue
+            &larr; Back to tickets
           </Link>
 
           <div className="flex flex-col gap-2">
