@@ -7,7 +7,7 @@ import { Inbox, Settings } from 'lucide-react'
 // goes somewhere sensible.
 export function getLinks({ desk, isDeskAdmin, isSuperAdmin } = {}) {
   return [
-    ...(desk ? [{ to: `/d/${desk.slug}`, label: 'Queue', icon: Inbox }] : []),
+    ...(desk ? [{ to: `/d/${desk.slug}`, label: 'Tickets', icon: Inbox }] : []),
     ...(isDeskAdmin || isSuperAdmin ? [{ to: '/admin', label: 'Admin', icon: Settings }] : []),
   ]
 }

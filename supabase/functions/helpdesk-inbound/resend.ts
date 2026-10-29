@@ -73,7 +73,7 @@ export interface Deps {
 }
 
 export type Outcome =
-  | { status: 'ingested'; ticket_id: string; created: boolean; reopened: boolean }
+  | { status: 'ingested'; ticket_id: string; message_id: string; created: boolean; reopened: boolean }
   | { status: 'duplicate' }
   | { status: 'skipped'; reason: string }
   | { status: 'unrouted' }
@@ -283,7 +283,7 @@ export async function processEmail(deps: Deps, emailId: string, addressToDesk: M
 
   await storeAttachments(deps, email, data.ticket_id, data.message_id)
   await logOutcome(db, email, 'ingested', null, sender, subject, data.ticket_id)
-  return { status: 'ingested', ticket_id: data.ticket_id, created: !!data.created_ticket, reopened: !!data.reopened }
+  return { status: 'ingested', ticket_id: data.ticket_id, message_id: data.message_id, created: !!data.created_ticket, reopened: !!data.reopened }
 }
 
 async function storeAttachments(deps: Deps, email: ReceivedEmail, ticketId: string, messageId: string) {

@@ -1,6 +1,7 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { ensureBucket, loadAddressMap, processEmail, ResendClient, verifyWebhook } from './resend.ts'
 import type { Db } from './resend.ts'
+import { formatFrom } from '../_shared/sender.ts'
 import { buildNewTicketEmail } from './notify.ts'
 
 // Receives Resend's `email.received` webhook and turns the email into a
@@ -79,6 +80,7 @@ Deno.serve(async (req) => {
     if (outcome.status === 'ingested') {
       triggerDraft(outcome.ticket_id)
       if (outcome.created) background(notifyNewTicket(db, outcome.ticket_id))
+      else triggerAssigneeNotice(outcome.ticket_id, outcome.message_id)
     }
     return json(outcome)
   } catch (err) {
@@ -101,6 +103,21 @@ function triggerDraft(ticketId: string) {
     },
     body: JSON.stringify({ ticket_id: ticketId }),
   }).catch((err) => console.error('generate-draft trigger failed:', err.message))
+
+  background(call)
+}
+
+// A requester reply on an existing ticket emails its assigned agent (a no-op
+// when unassigned). Same fire-and-forget shape as triggerDraft.
+function triggerAssigneeNotice(ticketId: string, messageId: string) {
+  const call = fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/notify-assignee`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ticket_id: ticketId, message_id: messageId }),
+  }).catch((err) => console.error('notify-assignee trigger failed:', err.message))
 
   background(call)
 }
@@ -156,7 +173,7 @@ async function notifyNewTicket(db: Db, ticketId: string) {
     })
     // One message per recipient so agents don't see each other's addresses
     // and one bad address can't block the rest.
-    const from = Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org'
+    const from = formatFrom(desk.name, Deno.env.get('HELPDESK_RESEND_FROM'))
     await Promise.all(to.map(async (addr) => {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',

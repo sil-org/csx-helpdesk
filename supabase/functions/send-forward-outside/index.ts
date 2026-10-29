@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { formatFrom } from '../_shared/sender.ts'
 
 // Forwards a ticket's public thread to an address outside the desk, then
 // closes it (spec section 9: "forward outside"). Called directly from the
@@ -9,7 +10,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 // went to — a ticket is never marked "forwarded" unless it actually was.
 // Internal notes are never included (same rule as generate-draft's thread).
 
-const RESEND_FROM_ADDRESS = (Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org').split('<').pop()!.replace('>', '').trim()
+const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM')
 
 interface SendForwardOutsideRequest {
   ticket_id: string
@@ -97,7 +98,7 @@ Deno.serve(async (req) => {
       method: 'POST',
       headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: `${desk.name} <${RESEND_FROM_ADDRESS}>`,
+        from: formatFrom(desk.name, RESEND_FROM),
         to: [to_email],
         reply_to: fromAddress.address,
         subject,

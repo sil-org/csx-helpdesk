@@ -131,7 +131,7 @@ test('verifyWebhook accepts a correct signature and rejects tampering, staleness
 test('group mail: routes by received_for/To, uses the original sender, strips the footer', async () => {
   const { deps, calls } = makeDeps(groupMail())
   const out = await processEmail(deps, 'em-1', desks)
-  assert.deepEqual(out, { status: 'ingested', ticket_id: 't1', created: true, reopened: false })
+  assert.deepEqual(out, { status: 'ingested', ticket_id: 't1', message_id: 'm1', created: true, reopened: false })
   const p = (calls.rpc[0] as { p: Record<string, unknown> }).p
   assert.equal(p.desk_id, 'desk-ghd')
   assert.equal(p.source_address, 'helpdesk@sil.org')
