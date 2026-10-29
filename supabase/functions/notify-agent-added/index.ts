@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { formatFrom } from '../_shared/sender.ts'
 import { buildNotifyEmail } from './message.ts'
 
 // Sends a "you've been added" email with a sign-in link when someone is
@@ -12,7 +13,7 @@ import { buildNotifyEmail } from './message.ts'
 // with a dedicated secret rather than the service role key, since a trigger
 // definition is visible to other admins on this shared Supabase project.
 
-const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org'
+const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM')
 
 interface NotifyRequest {
   profile_id: string
@@ -59,7 +60,7 @@ Deno.serve(async (req) => {
         Authorization: `Bearer ${sendKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ from: RESEND_FROM, to: profile.primary_email, subject, text }),
+      body: JSON.stringify({ from: formatFrom(desk.name, RESEND_FROM), to: profile.primary_email, subject, text }),
     })
     if (!res.ok) throw new Error(`Resend send failed: ${res.status} ${await res.text()}`)
 

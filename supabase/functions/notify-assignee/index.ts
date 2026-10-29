@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { formatFrom } from '../_shared/sender.ts'
 import { buildAssigneeEmail } from './message.ts'
 
 // Emails a ticket's assigned agent when the requester updates it — an emailed
@@ -12,7 +13,7 @@ import { buildAssigneeEmail } from './message.ts'
 // most once (assignee_notified_at is claimed atomically), so repeat or forged
 // calls can't spam the agent.
 
-const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org'
+const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM')
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders() })
@@ -85,7 +86,7 @@ Deno.serve(async (req) => {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: RESEND_FROM, to: assignee.primary_email, subject, text }),
+      body: JSON.stringify({ from: formatFrom(desk.name, RESEND_FROM), to: assignee.primary_email, subject, text }),
     })
     if (!res.ok) {
       // Release the claim so a retry can try again.

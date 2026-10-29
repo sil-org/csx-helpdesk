@@ -1,6 +1,7 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { ensureBucket, loadAddressMap, processEmail, ResendClient, verifyWebhook } from './resend.ts'
 import type { Db } from './resend.ts'
+import { formatFrom } from '../_shared/sender.ts'
 import { buildNewTicketEmail } from './notify.ts'
 
 // Receives Resend's `email.received` webhook and turns the email into a
@@ -172,7 +173,7 @@ async function notifyNewTicket(db: Db, ticketId: string) {
     })
     // One message per recipient so agents don't see each other's addresses
     // and one bad address can't block the rest.
-    const from = Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org'
+    const from = formatFrom(desk.name, Deno.env.get('HELPDESK_RESEND_FROM'))
     await Promise.all(to.map(async (addr) => {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',

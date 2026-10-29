@@ -12,6 +12,7 @@
     "test:kb": "node --experimental-strip-types --no-warnings --test supabase/functions/refresh-kb-cache/*.test.ts",
     "test:notify": "node --experimental-strip-types --no-warnings --test supabase/functions/notify-agent-added/*.test.ts",
     "test:assignee": "node --experimental-strip-types --no-warnings --test supabase/functions/notify-assignee/*.test.ts",
+    "test:sender": "node --experimental-strip-types --no-warnings --test supabase/functions/_shared/*.test.ts",
     "test:reply": "node --experimental-strip-types --no-warnings --test supabase/functions/send-reply/*.test.ts"
   },
   "dependencies": {

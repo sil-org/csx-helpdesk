@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { formatFrom } from '../_shared/sender.ts'
 import { textToHtml } from './textToHtml.ts'
 
 // Actually sends a ticket reply by email (spec section 6 "Sending"). Called
@@ -15,7 +16,7 @@ import { textToHtml } from './textToHtml.ts'
 // deliberately turns this on for it in Admin. Sending refuses to fire
 // without it, on purpose — never silently falls back to "send anyway."
 
-const RESEND_FROM_ADDRESS = (Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org').split('<').pop()!.replace('>', '').trim()
+const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM')
 
 interface SendReplyRequest {
   message_id: string
@@ -92,7 +93,7 @@ Deno.serve(async (req) => {
       method: 'POST',
       headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: `${desk.name} <${RESEND_FROM_ADDRESS}>`,
+        from: formatFrom(desk.name, RESEND_FROM),
         to: [ticket.requester?.email ?? ticket.source_address].filter(Boolean),
         cc: (ccs ?? []).map((c) => c.email),
         reply_to: replyAddress.address,

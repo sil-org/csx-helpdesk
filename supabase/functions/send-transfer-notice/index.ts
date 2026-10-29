@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { formatFrom } from '../_shared/sender.ts'
 
 // Emails the reporter that their ticket moved to a new desk (spec section 9,
 // decision 16). Called directly from the agent's browser right after
@@ -8,7 +9,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 // already happened and isn't undone, the same way a reply that fails to
 // send still keeps its ticket_messages row (see send-reply).
 
-const RESEND_FROM_ADDRESS = (Deno.env.get('HELPDESK_RESEND_FROM') || 'helpdesk@em.sil.org').split('<').pop()!.replace('>', '').trim()
+const RESEND_FROM = Deno.env.get('HELPDESK_RESEND_FROM')
 
 interface SendTransferNoticeRequest {
   ticket_id: string
@@ -70,7 +71,7 @@ Deno.serve(async (req) => {
       method: 'POST',
       headers: { Authorization: `Bearer ${sendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: `${desk.name} <${RESEND_FROM_ADDRESS}>`,
+        from: formatFrom(desk.name, RESEND_FROM),
         to: [to],
         reply_to: replyAddress.address,
         subject,
