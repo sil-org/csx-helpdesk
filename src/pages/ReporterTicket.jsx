@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
 import { hd, relativeTime, REPORTER_STATUS_LABEL } from '../lib/helpdesk'
 import StatusPill from '../components/StatusPill'
 
@@ -54,6 +55,14 @@ export default function ReporterTicket() {
       setError(rpcErr.message)
     } else {
       setComment('')
+      // Same as an emailed reply: ask for a fresh AI draft for the agent.
+      // Fire-and-forget — a failure just means no draft, never a lost comment.
+      supabase.auth.getSession().then(({ data: { session } }) =>
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/request-draft`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticket_id: ticket.id }),
+        })).catch(() => {})
       await load()
       endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
