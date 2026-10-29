@@ -395,5 +395,33 @@ select t.ok('an inbound message can never be marked internal',
   t.raises($$insert into helpdesk.ticket_messages (ticket_id, direction, internal, body)
     values ('e0000000-0000-0000-0000-000000000002', 'inbound', true, 'x')$$, 'ticket_messages_check'));
 
+-- ── Reporter comments from the app ───────────────────────────────────────
+
+select t.as_owner();
+update helpdesk.tickets set status = 'waiting' where id = 'e0000000-0000-0000-0000-000000000001';
+select t.as_user(t.u(5));  -- reporter
+select helpdesk.add_reporter_comment('e0000000-0000-0000-0000-000000000001', '  Still broken, thanks  ');
+select t.ok('a reporter can comment: stored as a trimmed, public, inbound message from them',
+  t.count($$select 1 from helpdesk.ticket_messages where ticket_id = 'e0000000-0000-0000-0000-000000000001'
+    and direction = 'inbound' and not internal and body = 'Still broken, thanks'
+    and author_email = 'maria@sil.org' and profile_id = 'b0000000-0000-0000-0000-000000000005'$$) = 1);
+select t.as_owner();
+select t.ok('a reporter comment reopens a waiting ticket, logs it and stamps the reply clock',
+  (select status::text = 'open' and last_requester_reply_at is not null
+   from helpdesk.tickets where id = 'e0000000-0000-0000-0000-000000000001')
+  and exists (select 1 from helpdesk.ticket_events
+    where ticket_id = 'e0000000-0000-0000-0000-000000000001' and event_type = 'reopened' and from_value = 'waiting'));
+select t.as_user(t.u(5));
+select t.ok('a reporter cannot comment on another reporter''s ticket',
+  t.denied($$select helpdesk.add_reporter_comment('e0000000-0000-0000-0000-000000000002', 'hi')$$));
+select t.ok('a reporter cannot comment on a deleted ticket',
+  t.denied($$select helpdesk.add_reporter_comment('e0000000-0000-0000-0000-000000000003', 'hi')$$));
+select t.ok('an empty comment is refused',
+  t.raises($$select helpdesk.add_reporter_comment('e0000000-0000-0000-0000-000000000001', '   ')$$, 'empty'));
+select t.as_user(t.u(6));  -- bystander
+select t.ok('someone who is not the reporter cannot comment',
+  t.denied($$select helpdesk.add_reporter_comment('e0000000-0000-0000-0000-000000000001', 'hi')$$));
+select t.as_owner();
+
 rollback;
 \echo ALL TESTS PASSED
