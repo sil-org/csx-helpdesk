@@ -45,32 +45,32 @@ const h = (level: number, text: string) => ({
 })
 const p = (text: string) => ({ paragraph: { elements: [{ textRun: { content: text + '\n' } }] } })
 
-test('docToKbText hides a [staff-only] section from the requester-visible text but keeps it in full', () => {
-  const { full, requesterVisible } = docToKbText({
-    body: { content: [h(1, 'Accounts'), p('Reset at account.sil.org.'), h(2, 'Escalation [staff-only]'), p('Page Sam at 555-0100.'), h(2, 'Billing'), p('Invoices monthly.')] },
+test('docToKbText hides a [no-quote] section from the shareable text but keeps it in full', () => {
+  const { full, shareable } = docToKbText({
+    body: { content: [h(1, 'Accounts'), p('Reset at account.sil.org.'), h(2, 'Escalation [no-quote]'), p('Page Sam at 555-0100.'), h(2, 'Billing'), p('Invoices monthly.')] },
   })
   assert.match(full, /Page Sam/)
-  assert.match(requesterVisible, /Reset at account/)
-  assert.match(requesterVisible, /Invoices monthly/)
-  assert.doesNotMatch(requesterVisible, /Page Sam|Escalation/)
+  assert.match(shareable, /Reset at account/)
+  assert.match(shareable, /Invoices monthly/)
+  assert.doesNotMatch(shareable, /Page Sam|Escalation/)
 })
 
-test('docToKbText: a staff-only section includes its sub-headings and ends at the next heading of the same or higher level', () => {
-  const { requesterVisible } = docToKbText({
-    body: { content: [h(1, 'A [Staff-Only]'), p('secret a'), h(2, 'A.1'), p('secret a1'), h(1, 'B'), p('public b'), h(2, 'B.1 [staff only]'), p('secret b1'), h(1, 'C'), p('public c')] },
+test('docToKbText: a no-quote section includes its sub-headings and ends at the next heading of the same or higher level', () => {
+  const { shareable } = docToKbText({
+    body: { content: [h(1, 'A [No-Quote]'), p('secret a'), h(2, 'A.1'), p('secret a1'), h(1, 'B'), p('public b'), h(2, 'B.1 [no quote]'), p('secret b1'), h(1, 'C'), p('public c')] },
   })
-  assert.doesNotMatch(requesterVisible, /secret/)
-  assert.match(requesterVisible, /public b/)
-  assert.match(requesterVisible, /public c/)
+  assert.doesNotMatch(shareable, /secret/)
+  assert.match(shareable, /public b/)
+  assert.match(shareable, /public c/)
 })
 
 test('docToKbText without any marker returns the same text twice', () => {
-  const { full, requesterVisible } = docToKbText({ body: { content: [h(1, 'Hi'), p('there')] } })
+  const { full, shareable } = docToKbText({ body: { content: [h(1, 'Hi'), p('there')] } })
   assert.equal(full, 'Hi\nthere')
-  assert.equal(requesterVisible, full)
+  assert.equal(shareable, full)
 })
 
 test('docToKbText only treats real headings as section starts, not body text mentioning the marker', () => {
-  const { requesterVisible } = docToKbText({ body: { content: [h(1, 'Docs'), p('Mark a heading [staff-only] to hide it.'), p('still visible')] } })
-  assert.match(requesterVisible, /still visible/)
+  const { shareable } = docToKbText({ body: { content: [h(1, 'Docs'), p('Mark a heading [no-quote] to hide it.'), p('still visible')] } })
+  assert.match(shareable, /still visible/)
 })

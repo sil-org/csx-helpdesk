@@ -28,7 +28,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 18 | The parallel run with YouTrack is per address: an address runs in shadow mode (the Resend address is just another group member; the app reads and drafts but sends nothing, `live_replies` off) until a desk trusts it, then `live_replies` is turned on for that address. Outbound replies go from `@em.sil.org` (already verified on Resend) with Reply-To set to the desk's @sil.org address. |
 | 19 | Revised 2026-10-30. Each desk's Google Doc stays the source of truth for that desk's KB. A one-click rating on resolve (Covered / Wrong or out of date / Missing) and a nightly digest that compares each AI draft with what was actually sent produce proposals, deduplicated so repeated issues don't each create an entry. The app never edits a Doc: a service account with commenter access posts the proposals as comments (one batched comment per desk per night) and a desk admin applies approved changes by hand. |
 | 20 | The proposals table in the database is the authority on proposal status (pending, approved, rejected, applied). The Doc comment is only the delivery channel, because Google's "resolved" cannot tell applied from rejected. Admins approve or reject in the app; rejected proposals are suppressed. |
-| 21 | Each KB section has a visibility, set by putting `[staff-only]` in its heading (the section runs to the next heading of the same or higher level). A desk's own drafts see its whole KB but are told never to quote staff-only sections. Other desks that use a shared KB, and requesters who sign in to a read-only KB view, see only the requester-visible sections. |
+| 21 | Each desk's KB Doc is viewable by all of SIL (view-only, shared in Google); there is no separate KB view in the app. A section is kept out of AI replies by putting `[no-quote]` in its heading (the section runs to the next heading of the same or higher level): other desks' drafts never see it, and the desk's own drafts may use it as background but must not quote it. The marker hides nothing from people, so material that must stay private does not belong in these Docs. |
 
 ## 2. Architecture
 
@@ -211,7 +211,6 @@ Behaviour by confidence:
    b. Link each draft to the reply sent; capture the difference.
    c. Nightly job: classify differences and ratings, deduplicate, write proposals.
    d. Delivery as one batched Doc comment per desk; approve, reject and applied tracked in the app.
-   e. Read-only KB view for signed-in requesters (requester-visible entries only).
 8. **SLA, reports, nudge, auto-close, satisfaction rating.**
 9. **SSO swap; per-desk alias cutover and YouTrack retirement.**
 

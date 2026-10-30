@@ -20,9 +20,9 @@ test('assembleKb gives the own KB first, then each shared KB labeled with its de
   assert.match(kb, /SHARED BY THE GLOBAL IT DESK/)
 })
 
-test('assembleKb tells the model not to reveal [staff-only] sections and that the own KB wins', () => {
+test('assembleKb tells the model not to reveal [no-quote] sections and that the own KB wins', () => {
   const kb = assembleKb({ own: 'x', sources: [{ deskName: 'Dallas', content: 'y' }] })!
-  assert.match(kb, /never quote or reveal/)
+  assert.match(kb, /never quote, closely paraphrase or reveal/)
   assert.match(kb, /follow the earlier one/)
 })
 

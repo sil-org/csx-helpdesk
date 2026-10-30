@@ -3,18 +3,18 @@
 
 export interface KbSource {
   deskName: string
-  // Already restricted to requester-visible sections by refresh-kb-cache.
+  // Already minus [no-quote] sections, by refresh-kb-cache.
   content: string
 }
 
-// `own` is the desk's own KB (the whole Doc, [staff-only] sections included).
+// `own` is the desk's own KB (the whole Doc, [no-quote] sections included).
 // `sources` are other desks' shared KBs, in precedence order (first wins).
 // Returns null when there is nothing to give the model.
 export function assembleKb(opts: { own: string | null; sources: KbSource[] }): string | null {
   const parts: string[] = []
   if (opts.own?.trim()) {
     parts.push(
-      `THIS DESK'S OWN KNOWLEDGE BASE (sections whose heading is marked [staff-only] are for agents: let them inform the reply, but never quote or reveal them to the requester):\n${opts.own.trim()}`,
+      `THIS DESK'S OWN KNOWLEDGE BASE (sections whose heading is marked [no-quote] are background for agents: let them inform the reply, but never quote, closely paraphrase or reveal them to the requester):\n${opts.own.trim()}`,
     )
   }
   for (const s of opts.sources) {

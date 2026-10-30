@@ -1195,13 +1195,13 @@ create trigger desk_settings_guard_kb_doc_id before insert or update on helpdesk
   for each row execute function helpdesk.guard_kb_doc_id();
 
 -- One cached copy of each desk's KB Doc, written by refresh-kb-cache.
--- requester_visible_content is the Doc minus sections whose heading is marked
--- [staff-only]; it is what other desks' drafts see. source_doc_id lets the
+-- shareable_content is the Doc minus sections whose heading is marked
+-- [no-quote]; it is what other desks' drafts see. source_doc_id lets the
 -- reader ignore a cache left over from a previous Doc.
 create table if not exists helpdesk.desk_kb_cache (
   desk_id uuid primary key references helpdesk.desks(id) on delete cascade,
   content text,
-  requester_visible_content text,
+  shareable_content text,
   source_doc_id text,
   refreshed_at timestamptz
 );

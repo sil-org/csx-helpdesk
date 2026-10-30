@@ -441,7 +441,7 @@ export default function AdminDashboard() {
                     <span>
                       <span className="font-semibold">Share this knowledge base with other desks</span>
                       <span className="block text-xs text-gray-500">
-                        Desks that choose to use it will have their AI drafts quote it to their own requesters, so treat it as published. Put [staff-only] in a heading to keep that section (and everything under it) private to this desk.
+                        Desks that choose to use it will have their AI drafts quote it to their own requesters, so treat it as published. Put [no-quote] in a heading to keep that section (and everything under it) out of other desks\u2019 drafts.
                       </span>
                     </span>
                   </label>

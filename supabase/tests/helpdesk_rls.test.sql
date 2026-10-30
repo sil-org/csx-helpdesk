@@ -475,7 +475,7 @@ select t.ok('a desk admin cannot remove another desk''s source choice',
 
 -- Cached KB text: written by the service role, read by the desk's own agents.
 select t.as_service();
-insert into helpdesk.desk_kb_cache (desk_id, content, requester_visible_content, source_doc_id) values
+insert into helpdesk.desk_kb_cache (desk_id, content, shareable_content, source_doc_id) values
   ('d0000000-0000-0000-0000-000000000001', 'dallas full', 'dallas public', 'doc-dallas'),
   ('d0000000-0000-0000-0000-000000000002', 'git full', 'git public', 'doc-git');
 select t.as_user(t.u(2));  -- Dallas member (the Dallas agent was removed by the set_desk_role tests)

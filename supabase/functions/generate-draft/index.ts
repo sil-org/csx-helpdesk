@@ -14,7 +14,7 @@ import type { KbSource } from './kb.ts'
 // "cannot leak into a reply"). The knowledge base is read from the cached
 // Docs (refreshed daily by refresh-kb-cache), not fetched live, since Doc reads
 // are both slower and metered separately from this function's own cost budget:
-// the desk's own KB in full, plus the requester-visible part of any other
+// the desk's own KB in full, plus the shareable part (no [no-quote] sections) of any other
 // desk's shared KB that this desk has chosen to use (spec decision 14).
 
 const ANTHROPIC_MODEL = Deno.env.get('HELPDESK_DRAFT_MODEL') || 'claude-sonnet-5-5'
@@ -158,7 +158,7 @@ async function loadKb(db: ReturnType<typeof createClient>, deskId: string, kbDoc
   if (ids.length) {
     const [{ data: settings }, { data: caches }, { data: desks }] = await Promise.all([
       db.from('desk_settings').select('desk_id, kb_shared, kb_doc_id').in('desk_id', ids),
-      db.from('desk_kb_cache').select('desk_id, requester_visible_content, source_doc_id').in('desk_id', ids),
+      db.from('desk_kb_cache').select('desk_id, shareable_content, source_doc_id').in('desk_id', ids),
       db.from('desks').select('id, name').in('id', ids),
     ])
     for (const id of ids) {
@@ -166,8 +166,8 @@ async function loadKb(db: ReturnType<typeof createClient>, deskId: string, kbDoc
       const cache = caches?.find((x) => x.desk_id === id)
       // Only a desk that is still sharing counts, and only the part of its
       // Doc that is safe for another desk's requesters to see.
-      if (!st?.kb_shared || !st.kb_doc_id || cache?.source_doc_id !== st.kb_doc_id || !cache.requester_visible_content) continue
-      sources.push({ deskName: desks?.find((x) => x.id === id)?.name ?? 'another', content: cache.requester_visible_content })
+      if (!st?.kb_shared || !st.kb_doc_id || cache?.source_doc_id !== st.kb_doc_id || !cache.shareable_content) continue
+      sources.push({ deskName: desks?.find((x) => x.id === id)?.name ?? 'another', content: cache.shareable_content })
     }
   }
 

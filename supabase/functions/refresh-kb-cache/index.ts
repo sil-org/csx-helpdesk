@@ -11,7 +11,7 @@ import type { GoogleDoc } from './docParse.ts'
 //
 // Two kinds of Doc (spec decisions 14, 19):
 //  - each desk's own KB (desk_settings.kb_doc_id) -> helpdesk.desk_kb_cache,
-//    with a second copy minus [staff-only] sections for other desks to use;
+//    with a second copy minus [no-quote] sections for other desks to use;
 //  - the legacy merged "SIL Global Helpdesk Knowledge Base" -> helpdesk.kb_cache,
 //    still used by desks that have no kb_doc_id of their own yet.
 // Doc IDs for desks come from the database (only a super admin can set them),
@@ -83,11 +83,11 @@ Deno.serve(async (req) => {
 
     for (const d of desks ?? []) {
       await attempt(d.desk_id, async () => {
-        const { full, requesterVisible } = docToKbText(await fetchDoc(token, d.kb_doc_id, email))
+        const { full, shareable } = docToKbText(await fetchDoc(token, d.kb_doc_id, email))
         const { error } = await db.from('desk_kb_cache').upsert({
           desk_id: d.desk_id,
           content: full,
-          requester_visible_content: requesterVisible,
+          shareable_content: shareable,
           source_doc_id: d.kb_doc_id,
           refreshed_at: new Date().toISOString(),
         })

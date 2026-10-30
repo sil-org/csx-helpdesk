@@ -463,8 +463,9 @@ Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
    `x-helpdesk-secret` header. A desk with no Doc of its own keeps using the
    old merged Doc until it has one.
 5. **Sharing.** Each desk admin chooses whether to share their KB and which
-   other desks' KBs to use. Put `[staff-only]` in a heading to keep that section
-   (and everything under it) out of what other desks see.
+   other desks' KBs to use. Put `[no-quote]` in a heading to keep that section
+   (and everything under it) out of other desks' drafts. It does not hide
+   anything from people, so share each Doc as view-only to all of SIL.
 
 Test the Doc parsing with `npm run test:kb` and the draft assembly with
 `npm run test:draft`.
