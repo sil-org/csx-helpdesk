@@ -463,6 +463,11 @@ Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
    to refresh one desk now, POST `{"desk_id": "<uuid>"}` with the
    `x-helpdesk-secret` header. A desk with no Doc of its own keeps using the
    old merged Doc until it has one.
+   To skip Docs that have not changed it first asks Google when each Doc was last
+   modified (a tiny call). That needs the Google Drive API enabled in the service
+   account's Google Cloud project; if it is not, nothing breaks and every Doc is
+   simply read each night. Add `"force": true` to the POST body to read a Doc
+   regardless.
 5. **Sharing.** Each desk admin chooses whether to share their KB and which
    other desks' KBs to use. Put `[no-quote]` in a heading to keep that section
    (and everything under it) out of other desks' drafts. It does not hide
