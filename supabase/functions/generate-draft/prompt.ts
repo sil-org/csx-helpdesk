@@ -39,18 +39,59 @@ export function senderTrustNote(trust: SenderTrust | undefined): string | null {
   return null
 }
 
-export function buildSystemPrompt(opts: { toneNotes: string | null; signature: string | null; kbContent: string | null; senderTrust?: SenderTrust }): string {
-  const parts = [BASELINE_RULES, ACCOUNT_ACCESS_RULES]
-  const trustNote = senderTrustNote(opts.senderTrust)
-  if (trustNote) parts.push(trustNote)
+// How long Anthropic keeps the stable part of the prompt cached: '5m' (the
+// default), '1h', or 'off'. Reading cached text costs a tenth of normal input
+// price; writing it costs 1.25x ('5m') or 2x ('1h'), so caching only saves
+// money when the same desk drafts again before the entry expires.
+export type PromptCache = 'off' | '5m' | '1h'
+
+export function parsePromptCache(value: string | undefined | null): PromptCache {
+  const v = (value ?? '').trim().toLowerCase()
+  return v === 'off' || v === '1h' ? v : '5m'
+}
+
+export interface SystemBlock {
+  type: 'text'
+  text: string
+  cache_control?: { type: 'ephemeral'; ttl?: '1h' }
+}
+
+export interface SystemPromptOpts {
+  toneNotes: string | null
+  signature: string | null
+  kbContent: string | null
+  senderTrust?: SenderTrust
+  cache?: PromptCache
+}
+
+// The system prompt as two blocks. Everything that is the same for a given
+// desk (rules, tone, sign-off, knowledge base) comes first and carries the
+// cache marker; the per-ticket sender note comes after it, so it can differ
+// on every ticket without invalidating the cached part. The prompt is matched
+// from the start, so nothing that varies per ticket may ever go in the first block.
+export function buildSystemBlocks(opts: SystemPromptOpts): SystemBlock[] {
+  const stable = [BASELINE_RULES, ACCOUNT_ACCESS_RULES]
   if (opts.toneNotes) {
-    parts.push(`DESK-SPECIFIC VOICE AND FACTS (from this desk's settings — follow these in addition to the rules above):\n${opts.toneNotes}`)
+    stable.push(`DESK-SPECIFIC VOICE AND FACTS (from this desk's settings — follow these in addition to the rules above):\n${opts.toneNotes}`)
   }
-  parts.push(`SIGN-OFF: end every drafted reply with exactly this line, on its own:\n${opts.signature || 'Kind regards, SIL Global Help Desk'}`)
+  stable.push(`SIGN-OFF: end every drafted reply with exactly this line, on its own:\n${opts.signature || 'Kind regards, SIL Global Help Desk'}`)
   if (opts.kbContent) {
-    parts.push(`KNOWLEDGE BASE (the team's knowledge base doc — prefer this over general knowledge for contact addresses, procedures, escalation paths and pricing; if a section is flagged as contested or unresolved, don't state it as settled fact, either avoid the contested detail or say you'll confirm the current details):\n${opts.kbContent}`)
+    stable.push(`KNOWLEDGE BASE (the team's knowledge base doc — prefer this over general knowledge for contact addresses, procedures, escalation paths and pricing; if a section is flagged as contested or unresolved, don't state it as settled fact, either avoid the contested detail or say you'll confirm the current details):\n${opts.kbContent}`)
   }
-  return parts.join('\n\n')
+
+  const cache = opts.cache ?? '5m'
+  const first: SystemBlock = { type: 'text', text: stable.join('\n\n') }
+  if (cache !== 'off') first.cache_control = cache === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' }
+
+  const blocks = [first]
+  const trustNote = senderTrustNote(opts.senderTrust)
+  if (trustNote) blocks.push({ type: 'text', text: trustNote })
+  return blocks
+}
+
+// The same prompt as one string (for tests and logging).
+export function buildSystemPrompt(opts: SystemPromptOpts): string {
+  return buildSystemBlocks(opts).map((b) => b.text).join('\n\n')
 }
 
 export function buildUserMessage(opts: { subject: string | null; messages: ThreadMessage[] }): string {
