@@ -208,7 +208,7 @@ Behaviour by confidence:
 5. **Reporter detection:** layers 1, 2 and 4, then layer 3 only if needed.
 6. **Transfers and external forwards.**
 7. **Per-desk knowledge bases and automatic AI drafts, then the learning loop:**
-   a. Per-desk KB Docs, share and use-as-source toggles, per-section visibility. *(Built: the schema (`schema_helpdesk.sql`), `refresh-kb-cache`, `generate-draft/kb.ts`, the admin Knowledge base card. Not yet deployed or run against live Docs.)*
+   a. Per-desk KB Docs, share and use-as-source toggles, per-section visibility. *(Built: the schema (`schema_helpdesk.sql`, and `migration_kb_learning_loop.sql` for existing projects), `refresh-kb-cache`, `generate-draft/kb.ts`, the admin Knowledge base card. Not yet deployed or run against live Docs.)*
    b. Link each draft to the reply sent; capture the difference. *(Built: `record_draft_outcome` and the ticket screen. Not yet deployed.)*
    c. Nightly job: classify differences and ratings, deduplicate, write proposals.
    d. Delivery as one batched Doc comment per desk; approve, reject and applied tracked in the app.

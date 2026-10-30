@@ -447,10 +447,10 @@ otherwise.
 
 Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
 
-1. **Database.** Run the whole of `supabase/schema_helpdesk.sql` in the SQL
-   editor. It is safe to run again on a project that already has it: it adds only
-   what is missing and changes nothing that exists. There are no separate
-   migration files for this feature.
+1. **Database.** On a project that already has `schema_helpdesk.sql`, run the
+   whole of `supabase/migration_kb_learning_loop.sql` in the SQL editor. It is a
+   complete script (not a diff) and safe to run again. Fresh setups skip it:
+   `schema_helpdesk.sql` already includes everything in it.
 2. **Doc access.** Share each desk's Doc with the help desk service account
    (`HELPDESK_GOOGLE_SERVICE_ACCOUNT_EMAIL`). View access is enough for now; the
    nightly suggestions will need comment access.
