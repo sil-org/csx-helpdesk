@@ -1,6 +1,9 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { buildSystemPrompt, buildUserMessage, SUBMIT_DRAFT_TOOL } from './prompt.ts'
 import type { ThreadMessage } from './prompt.ts'
+import { assembleKb } from './kb.ts'
+import { senderTrust, weakestTrust } from '../_shared/senderTrust.ts'
+import type { KbSource } from './kb.ts'
 
 // Generates (or regenerates) one ticket's AI draft reply (spec section 11).
 // Fired-and-forgotten by helpdesk-inbound via EdgeRuntime.waitUntil right
@@ -9,9 +12,11 @@ import type { ThreadMessage } from './prompt.ts'
 // a failed call here just means no draft, not a broken ticket.
 //
 // Internal notes are never included in the thread sent to the model (spec:
-// "cannot leak into a reply"). The knowledge base is read from helpdesk.kb_cache
-// (refreshed daily by refresh-kb-cache), not fetched live, since Doc reads are
-// both slower and metered separately from this function's own cost budget.
+// "cannot leak into a reply"). The knowledge base is read from the cached
+// Docs (refreshed daily by refresh-kb-cache), not fetched live, since Doc reads
+// are both slower and metered separately from this function's own cost budget:
+// the desk's own KB in full, plus the shareable part (no [no-quote] sections) of any other
+// desk's shared KB that this desk has chosen to use (spec decision 14).
 
 const ANTHROPIC_MODEL = Deno.env.get('HELPDESK_DRAFT_MODEL') || 'claude-sonnet-5-5'
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
@@ -47,7 +52,7 @@ Deno.serve(async (req) => {
     if (!ticket) return json({ error: 'ticket not found' }, 404)
 
     const { data: msgs, error: mErr } = await db.from('ticket_messages')
-      .select('direction, body, profile_id')
+      .select('direction, body, profile_id, author_email, raw_headers')
       .eq('ticket_id', ticket_id)
       .eq('internal', false)
       .order('created_at')
@@ -55,11 +60,22 @@ Deno.serve(async (req) => {
     if (!msgs || msgs.length === 0) return json({ skipped: 'no public messages yet' })
 
     const { data: settings } = await db.from('desk_settings')
-      .select('tone_notes, signature')
+      .select('tone_notes, signature, kb_doc_id')
       .eq('desk_id', ticket.current_desk_id)
       .maybeSingle()
 
-    const { data: kb } = await db.from('kb_cache').select('content').eq('id', true).maybeSingle()
+    // Decided by us from the email's authentication (spec decision 22), never
+    // from what the email says. A message from the signed-in app (profile_id
+    // set) is verified by sign-in; the thread is as trusted as its weakest sender.
+    const trust = weakestTrust(msgs.filter((m) => m.direction === 'inbound').map((m) =>
+      m.profile_id
+        ? 'sil_verified' as const
+        : senderTrust({ fromEmail: m.author_email, originalAuthResults: m.raw_headers?.original_authentication_results }),
+    ))
+
+    // Unless the sender is verified SIL, [no-quote] sections are not just
+    // discouraged in the prompt, they are left out of what the model sees.
+    const kbContent = await loadKb(db, ticket.current_desk_id, settings?.kb_doc_id ?? null, trust !== 'sil_verified')
 
     const agentIds = [...new Set(msgs.filter((m) => m.direction === 'outbound' && m.profile_id).map((m) => m.profile_id))]
     const agentNames = new Map<string, string>()
@@ -78,9 +94,10 @@ Deno.serve(async (req) => {
     }))
 
     const system = buildSystemPrompt({
+      senderTrust: trust,
       toneNotes: settings?.tone_notes ?? null,
       signature: settings?.signature ?? null,
-      kbContent: kb?.content ?? null,
+      kbContent,
     })
     const userMessage = buildUserMessage({ subject: ticket.subject, messages: threadMessages })
 
@@ -126,6 +143,7 @@ Deno.serve(async (req) => {
       body: decision.reply,
       cited_sources: decision.cited_kb_section ? { kb_section: decision.cited_kb_section } : null,
       model: ANTHROPIC_MODEL,
+      sender_trust: trust,
     })
     if (insertErr) throw insertErr
 
@@ -135,6 +153,42 @@ Deno.serve(async (req) => {
     return json({ error: err.message }, 500)
   }
 })
+
+async function loadKb(
+  db: ReturnType<typeof createClient>, deskId: string, kbDocId: string | null, shareableOnly: boolean,
+): Promise<string | null> {
+  // A desk with no KB Doc of its own yet keeps using the legacy merged one.
+  if (!kbDocId) {
+    const { data } = await db.from('kb_cache').select('content').eq('id', true).maybeSingle()
+    return data?.content ?? null
+  }
+
+  // A cache row from a previous Doc (source_doc_id differs) is ignored, so
+  // changing a desk's Doc never serves the old Doc's text.
+  const { data: own } = await db.from('desk_kb_cache').select('content, shareable_content, source_doc_id').eq('desk_id', deskId).maybeSingle()
+
+  const { data: links } = await db.from('desk_kb_sources')
+    .select('source_desk_id').eq('desk_id', deskId).order('precedence').order('created_at')
+  const ids = (links ?? []).map((l) => l.source_desk_id)
+  const sources: KbSource[] = []
+  if (ids.length) {
+    const [{ data: settings }, { data: caches }, { data: desks }] = await Promise.all([
+      db.from('desk_settings').select('desk_id, kb_shared, kb_doc_id').in('desk_id', ids),
+      db.from('desk_kb_cache').select('desk_id, shareable_content, source_doc_id').in('desk_id', ids),
+      db.from('desks').select('id, name').in('id', ids),
+    ])
+    for (const id of ids) {
+      const st = settings?.find((x) => x.desk_id === id)
+      const cache = caches?.find((x) => x.desk_id === id)
+      // Only a desk that is still sharing counts, and only the part of its
+      // Doc that is safe for another desk's requesters to see.
+      if (!st?.kb_shared || !st.kb_doc_id || cache?.source_doc_id !== st.kb_doc_id || !cache.shareable_content) continue
+      sources.push({ deskName: desks?.find((x) => x.id === id)?.name ?? 'another', content: cache.shareable_content })
+    }
+  }
+
+  return assembleKb({ own: own?.source_doc_id === kbDocId ? (shareableOnly ? own.shareable_content : own.content) : null, sources })
+}
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {

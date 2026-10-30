@@ -442,3 +442,36 @@ Update that secret when a real domain replaces the Amplify URL.
 Optionally, `HELPDESK_NEW_TICKET_NOTIFY=a@sil.org,b@sil.org` adds extra
 recipients on every desk (e.g. someone who isn't an agent). Leave it unset
 otherwise.
+
+## Per-desk knowledge bases
+
+Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
+
+1. **Database.** On a project that already has `schema_helpdesk.sql`, run the
+   whole of `supabase/migration_kb_learning_loop.sql` in the SQL editor. It is a
+   complete script (not a diff) and safe to run again. Fresh setups skip it:
+   `schema_helpdesk.sql` already includes everything in it.
+2. **Doc access.** Share each desk's Doc with the help desk service account
+   (`HELPDESK_GOOGLE_SERVICE_ACCOUNT_EMAIL`). View access is enough for now; the
+   nightly suggestions will need comment access.
+3. **Link the Doc to the desk.** A super admin pastes the Doc link under
+   Admin > the desk > Knowledge base. Desk admins cannot do this: the service
+   account can read any Doc it has been given, so the Doc ID decides whose KB a
+   desk reads.
+4. **Refresh.** Deploy `refresh-kb-cache` and `generate-draft`. The daily
+   refresh reads every desk's Doc (one Doc failing does not stop the others);
+   to refresh one desk now, POST `{"desk_id": "<uuid>"}` with the
+   `x-helpdesk-secret` header. A desk with no Doc of its own keeps using the
+   old merged Doc until it has one.
+   To skip Docs that have not changed it first asks Google when each Doc was last
+   modified (a tiny call). That needs the Google Drive API enabled in the service
+   account's Google Cloud project; if it is not, nothing breaks and every Doc is
+   simply read each night. Add `"force": true` to the POST body to read a Doc
+   regardless.
+5. **Sharing.** Each desk admin chooses whether to share their KB and which
+   other desks' KBs to use. Put `[no-quote]` in a heading to keep that section
+   (and everything under it) out of other desks' drafts. It does not hide
+   anything from people, so share each Doc as view-only to all of SIL.
+
+Test the Doc parsing with `npm run test:kb` and the draft assembly with
+`npm run test:draft`.

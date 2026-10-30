@@ -1,6 +1,6 @@
 # SIL Help Desk: Product Spec (draft for review)
 
-Status: draft, written from the design conversation of 2026-10-25. Nothing in this file has been built. It supersedes the open questions in `HELPDESK_PROJECT_BRIEF.md` Sections 3-6 where they conflict; the brief remains the source for corpus migration (Section 8) and AWS tickets (Section 7), which stay deferred.
+Status: draft, written from the design conversation of 2026-10-25 and revised 2026-10-30 (per-desk knowledge bases, decisions 14 and 19-21). Most of this file is still unbuilt; the build order in Section 13 says what is. It supersedes the open questions in `HELPDESK_PROJECT_BRIEF.md` Sections 3-6 where they conflict; the brief remains the source for corpus migration (Section 8) and AWS tickets (Section 7), which stay deferred.
 
 UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; four screens: agent queue, ticket detail, reporter view, admin desks).
 
@@ -21,12 +21,15 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | 11 | Ingestion uses Resend inbound (revised from a Gmail-polled ingest mailbox; tested on real group-delivered mail). People keep writing to their usual @sil.org desk addresses; a Resend receiving address is a hidden member of each desk's Google Group and Resend's `email.received` webhook creates the ticket. No Google Cloud project, OAuth token or delegation is needed. Parallel run with YouTrack first; per-address cutover later. |
 | 12 | Each desk can have several addresses, and optionally its own mailbox. |
 | 13 | AI drafts are generated automatically on every new ticket and on every new requester reply (cached), draft-only in v1. |
-| 14 | Shared RAG corpus across all desks; each desk may opt out of contributing. |
+| 14 | Revised 2026-10-30. Each desk has its own knowledge base (KB), a Google Doc. Sharing is opt-in on both sides: a desk chooses whether to share its KB (`kb_shared`), and another desk chooses whether to use it as a source for its drafts (`desk_kb_sources`). A desk's own tickets only ever feed its own KB. Sharing a KB means other desks' drafts can quote it to their requesters, so it is effectively publishing. Replaces the earlier shared-by-default corpus. |
 | 15 | Default theme is SIL brand (SIL Blue `#005CB9`). Playfair for titles, Source Sans 3 for UI. Per-desk logo and optional color override. |
 | 16 | The reporter is emailed when their ticket is transferred to another desk (from the new desk's address). |
 | 17 | Deleted tickets are purged, and all ticket attachments and media are removed, after a configurable retention period, default 60 days. |
 | 18 | The parallel run with YouTrack is per address: an address runs in shadow mode (the Resend address is just another group member; the app reads and drafts but sends nothing, `live_replies` off) until a desk trusts it, then `live_replies` is turned on for that address. Outbound replies go from `@em.sil.org` (already verified on Resend) with Reply-To set to the desk's @sil.org address. |
-| 19 | The Google Doc knowledge base is the corpus and stays the single source of truth. A one-click rating on resolve (Covered / Wrong or out of date / Missing) and a nightly digest produce proposals, deduplicated so repeated issues don't each create an entry. A desk admin approves each proposal, and only then does the app edit the Doc. |
+| 19 | Revised 2026-10-30. Each desk's Google Doc stays the source of truth for that desk's KB. A one-click rating on resolve (Covered / Wrong or out of date / Missing) and a nightly digest that compares each AI draft with what was actually sent produce proposals, deduplicated so repeated issues don't each create an entry. The app never edits a Doc: a service account with commenter access posts the proposals as comments (one batched comment per desk per night) and a desk admin applies approved changes by hand. |
+| 20 | The proposals table in the database is the authority on proposal status (pending, approved, rejected, applied). The Doc comment is only the delivery channel, because Google's "resolved" cannot tell applied from rejected. Admins approve or reject in the app; rejected proposals are suppressed. |
+| 21 | Each desk's KB Doc is viewable by all of SIL (view-only, shared in Google); there is no separate KB view in the app. A section is kept out of AI replies by putting `[no-quote]` in its heading (the section runs to the next heading of the same or higher level): other desks' drafts never see it, and the desk's own drafts may use it as background but must not quote it. The marker hides nothing from people, so material that must stay private does not belong in these Docs. |
+| 22 | Sender trust. Most tickets are SIL people who can't sign in; the worry is an outsider emailing tickets to learn what the KB says, or to talk an agent into an account change. generate-draft works out a trust level for each ticket from the email's authentication, never from its text: `sil_verified` (an @sil.org sender whose DMARC check passed on Google's verdict for the original sender, or a message from someone signed in to the app), `sil_unverified` (says @sil.org but the check is missing or failed, so it may be forged) or `external`. A ticket takes the weakest level among its incoming messages. For anything below verified, `[no-quote]` sections are left out of what the model sees, and the prompt limits the draft to public self-service steps, no staff or internal contacts, and no confirming whether an account exists. The level is stored on the draft and shown to agents as a badge. Every draft starts a login problem by asking whether they tried "Forgot password"; only if that has been tried and the problem persists does the draft say an agent must confirm who they are before anything on the account changes. |
 
 ## 2. Architecture
 
@@ -66,11 +69,14 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `ticket_participants(ticket_id, email, type)`: CCs and agent followers.
 - `ticket_messages`: keep `internal`; add attachment references.
 - `ticket_events`: used for every reassignment, transfer, reporter change, promotion and reopen.
-- `desk_settings`: add per-desk tone/signature, `contribute_to_corpus`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
+- `desk_settings`: add per-desk tone/signature, `kb_doc_id` (the desk's own KB Google Doc), `kb_shared boolean default false`, holiday calendar, `deleted_retention_days` (nullable; null uses the global default).
 - `desk_settings`: also `attachment_retention_days` (nullable; null uses the global default) (`live_replies` lives on `desk_addresses`, not here).
 - Global settings (super admin): default `deleted_retention_days` = 60 and default `attachment_retention_days` = 60.
-- `corpus_documents`: becomes an index or cache of the Google Doc (for example if embeddings are added later), not a separate source of truth. Keeps the redaction flag and the exclusions for internal notes and sensitive tickets.
-- `corpus_proposals(id, desk_id, kind, target_entry_ref, proposed_text, source_ticket_ids, origin, status, proposed_by, reviewed_by, reviewed_at, applied_at, doc_version_ref)`: `kind` is new or amend; `origin` is on_resolve_rating or nightly_digest; `status` is pending, approved, rejected, applied or needs_manual_apply.
+- `desk_kb_sources(desk_id, source_desk_id, precedence)`: which other desks' shared KBs a desk uses as sources, and in what order when they contradict. A row is only valid while the source desk has `kb_shared` on.
+- `kb_cache(desk_id, content, source_doc_id, refreshed_at)`: one cached copy of each desk's KB Doc (replaces the single-row table).
+- `corpus_documents`: becomes an index or cache of the Google Docs (for example if embeddings are added later), not a separate source of truth. Keeps the redaction flag and the exclusions for internal notes and sensitive tickets.
+- `ticket_drafts`: add `sender_trust`, and `sent_message_id`, `used_draft`, `outcome` (`as_written`, `edited` or `rewritten`), `outcome_by`, `outcome_at`, so each draft can be compared with the reply that was actually sent. They are written only by the `record_draft_outcome` function, which accepts only a public reply on the same ticket, sent after the draft, from the desk that currently works the ticket; the first send wins. Drafts from before this change have no outcome and are not analyzed.
+- `corpus_proposals(id, desk_id, kind, target_entry_ref, proposed_text, source_ticket_ids, origin, status, proposed_by, reviewed_by, reviewed_at, applied_at, comment_id)`: `kind` is new or amend; `origin` is on_resolve_rating, nightly_digest or draft_diff; `status` is pending, approved, rejected or applied; `comment_id` is the Doc comment the proposal was delivered in.
 - `kb_ratings(ticket_id, rating, note, rated_by, rated_at)` and `kb_entry_usage(entry_ref, covered_count)` for the one-click rating and use counts.
 - Reporters see Paused as "On hold" with no date, and never see Deleted.
 - Closing by forwarding outside records `forwarded_to` so reports don't count it as a resolution.
@@ -163,20 +169,22 @@ Behaviour by confidence:
 - Gap detection: a "no known answer" flag on the ticket, feeding the "Missing" rating and the learning loop below.
 - Later tier, deferred: auto-send for high-confidence matches with "this solved it" / "I still need help" signed links.
 
-**Learning loop: the Google Doc is the corpus.** The knowledge base is the team's Google Doc ("SIL Global Helpdesk Knowledge Base"), and it stays the single source of truth. Drafts read it in full (v1, no embeddings needed). The system proposes changes to it; a person approves every change; only then does the app edit the Doc.
+**Learning loop: each desk's Google Doc is its KB.** Every desk has its own KB Doc and it stays the source of truth. Drafts read the desk's own Doc plus any shared Docs it has chosen to use (v1, no embeddings; move to entry-level retrieval if the combined text gets too large). The system proposes changes; a person approves every one; a person makes every edit.
 
-- **On resolve (one click).** When an agent marks a ticket Resolved, they rate the knowledge base for that ticket: **Covered**, **Wrong or out of date**, or **Missing**, with an optional note. This takes seconds and writes no entry.
+- **Draft versus sent (the main signal).** The app records which AI draft was loaded into the compose box and links it to the reply that was sent. The nightly job classifies each difference as a knowledge correction, a style change, or personalization for this requester. Only knowledge corrections can become KB proposals. Style changes become suggestions for the desk's tone notes. Personalization is ignored. A draft sent unedited is not counted as confirmation of anything in the KB, so the KB cannot reinforce itself.
+- **On resolve (one click).** When an agent marks a ticket Resolved, they rate the KB for that ticket: **Covered**, **Wrong or out of date**, or **Missing**, with an optional note.
   - *Covered:* nothing is proposed; the app counts the use against the matching entry so admins can see which entries matter most.
   - *Wrong or out of date:* creates an **amendment proposal** against that entry, showing the current text and the suggested fix.
   - *Missing:* held, not proposed. The nightly job groups similar misses, and once the same gap recurs (default three tickets in 30 days, configurable) it creates one **new-entry proposal** citing all the tickets. An agent can also use "propose now" for a one-off that matters.
-- **Nightly digest.** A scheduled job analyzes each desk's day: sent replies compared with the AI draft (sent as written, lightly edited, rewritten, and what changed), outcomes (not reopened, satisfaction rating, thumbs up/down), clustering of "Missing" ratings, and answers that contradict existing entries. It produces proposals, heavily edited drafts (where mistakes like the earlier GHD-1307 would show up), and suggested changes to the desk's style or accuracy rules.
-- **Review queue.** All proposals land in one queue per desk. A desk admin approves, edits or rejects each one. Rejected proposals are suppressed so they do not return. Items the Doc itself lists under "Open Items to Resolve" are never promoted to settled fact.
-- **Applying an approval.** The app edits the Doc through a service account with editor access to that one file. Before each edit it names a Doc version, so any change can be rolled back, and the Doc's version history is the audit trail. Amendments match the existing entry's exact text; new entries go under the relevant section heading. If the app cannot place an edit safely (for example the headings were restructured), it does not guess: the proposal stays open with the exact text to paste by hand. Test on a copy of the Doc first.
-- "Sent as written" and "not reopened" are evidence, not proof of correctness, which is why a person approves.
+- **Nightly job.** For each desk: classify the draft-versus-sent differences, cluster "Missing" ratings, find answers that contradict existing entries, and deduplicate against open and rejected proposals.
+- **Delivery by Doc comment.** The service account has commenter access only. It posts one batched comment per desk per night. Google's API cannot reliably anchor a comment to a specific entry, so each proposal in the comment names the entry, quotes the current text, gives the proposed text, and lists source tickets by number only (never quoted ticket content, since anyone with the Doc can read comments). Each proposal also appears in the desk's review queue in the app.
+- **Review.** A desk admin approves, edits or rejects each proposal in the app, then applies approved text to the Doc by hand and marks it applied. Rejected proposals are suppressed so they do not return. Items the Doc lists under "Open Items to Resolve" are never promoted to settled fact.
+- **Test first.** Before building delivery, test commenting on a copy of one Doc to confirm what the API does with anchoring and notifications.
+- Ticket text is untrusted input and proposals are only suggestions, which is one more reason nothing is applied automatically.
 - Personal details are redacted before analysis; internal notes and sensitive tickets are excluded.
 
 **Corpus policy.**
-- Shared across all desks (decision 14). Each desk may opt out of contributing (`contribute_to_corpus`); redaction is on by default.
+- Per desk, with opt-in sharing (decision 14). A desk's tickets only feed its own KB; redaction is on by default.
 - Redact emails, phone numbers, passwords and tokens before embedding.
 - Excluded always: internal notes and tickets marked sensitive.
 - Ticket text is untrusted input. Drafts are text only and never trigger actions.
@@ -199,7 +207,11 @@ Behaviour by confidence:
 4. **Reporter view, admin screens, branding.**
 5. **Reporter detection:** layers 1, 2 and 4, then layer 3 only if needed.
 6. **Transfers and external forwards.**
-7. **RAG and automatic AI drafts, then the learning loop** (on-resolve proposals, nightly digest, review queue).
+7. **Per-desk knowledge bases and automatic AI drafts, then the learning loop:**
+   a. Per-desk KB Docs, share and use-as-source toggles, per-section visibility. *(Built: the schema (`schema_helpdesk.sql`, and `migration_kb_learning_loop.sql` for existing projects), `refresh-kb-cache`, `generate-draft/kb.ts`, the admin Knowledge base card. Not yet deployed or run against live Docs.)*
+   b. Link each draft to the reply sent; capture the difference. *(Built: `record_draft_outcome` and the ticket screen. Not yet deployed.)*
+   c. Nightly job: classify differences and ratings, deduplicate, write proposals.
+   d. Delivery as one batched Doc comment per desk; approve, reject and applied tracked in the app.
 8. **SLA, reports, nudge, auto-close, satisfaction rating.**
 9. **SSO swap; per-desk alias cutover and YouTrack retirement.**
 
@@ -208,6 +220,9 @@ Behaviour by confidence:
 - Resend credentials: the API key can read received mail (and, if Full access, send); keep it in Supabase secrets only, use the narrowest scope Resend offers, and give outbound sending its own key. A forged webhook is prevented by the Svix signature check. Resend holds copies of ticket email for 30 days, which is a data-policy point to confirm. Quota: received mail shares the Resend team's email quota with anything else on that team, so a spam burst or a busy day could block other sending; decide whether helpdesk traffic needs its own plan or team.
 - Whether `schema_helpdesk.sql` was already applied to the shared project (affects the schema move).
 - Erasure requests (a person asking for their data to be removed before the retention window ends): handling not decided.
-- Editing the Doc from the app has not been tested; try it on a copy first. The service account needs editor access to that one file.
+- Doc comments from the service account have not been tested; try one on a copy first (anchoring, notification volume). The service account needs commenter access to each desk's Doc and no more.
+- Confirm `live_replies` is on for every address. The draft-versus-sent comparison only sees replies sent from the app.
+- Sender trust relies on Google's DMARC verdict for the original sender (`X-Original-Authentication-Results`), which is stored but was not used before. Confirm on real mail that mail from SIL people carries it; if it is often missing, many tickets will show "sender not verified". The prompt rules limit what a draft says but are not a hard barrier (only the `[no-quote]` removal is), so every draft still needs a person's review before it goes out.
+- Sharing a KB is effectively publishing it to other desks' requesters through drafts; desk admins need to be told this when they turn sharing on.
 - Who reviews proposals: each desk admin for their own desk (default), or one person for everything.
 - Strategic questions in the brief Section 10 (why now, ROI, why earlier combine attempts failed) remain unanswered; none of the above depends on them.

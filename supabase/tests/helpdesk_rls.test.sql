@@ -423,5 +423,132 @@ select t.ok('someone who is not the reporter cannot comment',
   t.denied($$select helpdesk.add_reporter_comment('e0000000-0000-0000-0000-000000000001', 'hi')$$));
 select t.as_owner();
 
+-- ── Per-desk knowledge bases ─────────────────────────────────────────────
+
+select t.as_service();
+insert into helpdesk.desk_settings (desk_id) values
+  ('d0000000-0000-0000-0000-000000000001'), ('d0000000-0000-0000-0000-000000000002')
+  on conflict do nothing;
+
+select t.as_user(t.u(2));  -- Dallas admin
+select t.ok('a desk admin cannot set their desk''s KB Doc (only a super admin can)',
+  t.raises($$update helpdesk.desk_settings set kb_doc_id = 'doc-dallas' where desk_id = 'd0000000-0000-0000-0000-000000000001'$$, 'only a super admin'));
+select t.ok('a desk admin can turn sharing on for their own desk',
+  t.rows_affected($$update helpdesk.desk_settings set kb_shared = true where desk_id = 'd0000000-0000-0000-0000-000000000001'$$) = 1);
+select t.ok('a desk admin cannot change sharing on another desk',
+  t.rows_affected($$update helpdesk.desk_settings set kb_shared = true where desk_id = 'd0000000-0000-0000-0000-000000000002'$$) = 0);
+
+select t.as_user(t.u(1));  -- super admin
+select t.ok('a super admin can set a desk''s KB Doc',
+  t.rows_affected($$update helpdesk.desk_settings set kb_doc_id = 'doc-dallas' where desk_id = 'd0000000-0000-0000-0000-000000000001'$$) = 1);
+select t.ok('two desks cannot claim the same KB Doc',
+  t.raises($$update helpdesk.desk_settings set kb_doc_id = 'doc-dallas' where desk_id = 'd0000000-0000-0000-0000-000000000002'$$, 'duplicate key'));
+select t.as_service();
+select t.ok('the service role (and the SQL editor) can set a KB Doc',
+  t.rows_affected($$update helpdesk.desk_settings set kb_doc_id = 'doc-git' where desk_id = 'd0000000-0000-0000-0000-000000000002'$$) = 1);
+
+-- Dallas is sharing; GIT is not.
+select t.as_user(t.u(2));  -- Dallas admin
+select t.ok('a desk cannot use a desk that is not sharing as a source',
+  t.denied($$insert into helpdesk.desk_kb_sources (desk_id, source_desk_id) values ('d0000000-0000-0000-0000-000000000001', 'd0000000-0000-0000-0000-000000000002')$$));
+select t.as_user(t.u(7));  -- GIT admin
+select t.ok('a desk admin can use a sharing desk as a source',
+  t.rows_affected($$insert into helpdesk.desk_kb_sources (desk_id, source_desk_id) values ('d0000000-0000-0000-0000-000000000002', 'd0000000-0000-0000-0000-000000000001')$$) = 1);
+select t.ok('a desk admin cannot add sources for another desk',
+  t.denied($$insert into helpdesk.desk_kb_sources (desk_id, source_desk_id) values ('d0000000-0000-0000-0000-000000000001', 'd0000000-0000-0000-0000-000000000001')$$));
+select t.ok('a desk admin cannot make their own desk a source for itself',
+  t.denied($$insert into helpdesk.desk_kb_sources (desk_id, source_desk_id) values ('d0000000-0000-0000-0000-000000000002', 'd0000000-0000-0000-0000-000000000002')$$));
+select t.as_service();
+select t.ok('a desk cannot be its own source, even for the service role',
+  t.raises($$insert into helpdesk.desk_kb_sources (desk_id, source_desk_id) values ('d0000000-0000-0000-0000-000000000002', 'd0000000-0000-0000-0000-000000000002')$$, 'check'));
+select t.as_user(t.u(2));  -- Dallas member (the Dallas agent was removed by the set_desk_role tests)
+select t.ok('another desk''s source choices are not visible to a desk''s agents',
+  t.count('select 1 from helpdesk.desk_kb_sources') = 0);
+select t.as_user(t.u(4));  -- GIT agent
+select t.ok('an agent sees their own desk''s source choices',
+  t.count('select 1 from helpdesk.desk_kb_sources') = 1);
+select t.ok('an agent (not admin) cannot change their desk''s sources',
+  t.rows_affected($$delete from helpdesk.desk_kb_sources$$) = 0);
+select t.as_user(t.u(2));  -- Dallas admin
+select t.ok('a desk admin cannot remove another desk''s source choice',
+  t.rows_affected($$delete from helpdesk.desk_kb_sources$$) = 0);
+
+-- Cached KB text: written by the service role, read by the desk's own agents.
+select t.as_service();
+insert into helpdesk.desk_kb_cache (desk_id, content, shareable_content, source_doc_id) values
+  ('d0000000-0000-0000-0000-000000000001', 'dallas full', 'dallas public', 'doc-dallas'),
+  ('d0000000-0000-0000-0000-000000000002', 'git full', 'git public', 'doc-git');
+select t.as_user(t.u(2));  -- Dallas member (the Dallas agent was removed by the set_desk_role tests)
+select t.ok('an agent reads only their own desk''s cached KB',
+  t.count('select 1 from helpdesk.desk_kb_cache') = 1
+  and t.count($$select 1 from helpdesk.desk_kb_cache where desk_id = 'd0000000-0000-0000-0000-000000000002'$$) = 0);
+select t.ok('an agent cannot write the cached KB',
+  t.denied($$update helpdesk.desk_kb_cache set content = 'x'$$));
+select t.as_user(t.u(5));  -- reporter
+select t.ok('a reporter cannot read any cached KB',
+  t.count('select 1 from helpdesk.desk_kb_cache') = 0);
+select t.ok('a non-agent sees no sharing desks',
+  t.count('select 1 from helpdesk.shared_kb_desk_ids()') = 0);
+select t.as_user(t.u(4));  -- GIT agent
+select t.ok('an agent can list which desks are sharing a KB',
+  (select array_agg(d) from helpdesk.shared_kb_desk_ids() d) = array['d0000000-0000-0000-0000-000000000001'::uuid]);
+
+select t.as_service();
+
+-- ── Draft outcomes ───────────────────────────────────────────────────────
+
+select t.as_service();
+insert into helpdesk.ticket_drafts (id, ticket_id, body) values
+  ('f0000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-000000000001', E'Hi Maria,\nTry the reset link.\nKind regards'),
+  ('f0000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-000000000001', 'Second draft text'),
+  ('f0000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-000000000001', 'Third draft text'),
+  ('f0000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-000000000001', 'Fourth draft text');
+insert into helpdesk.ticket_messages (id, ticket_id, direction, internal, body, profile_id, created_at) values
+  ('f1000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, E'Hi Maria,   Try the reset link.\r\nKind regards  ', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, 'Second draft text, plus a phone number', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, 'Something I wrote myself', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-000000000001', 'outbound', true,  'internal note', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000005', 'e0000000-0000-0000-0000-000000000001', 'inbound',  false, 'a requester message', null, now()),
+  ('f1000000-0000-0000-0000-000000000006', 'e0000000-0000-0000-0000-000000000002', 'outbound', false, 'a reply on another ticket', 'b0000000-0000-0000-0000-000000000007', now()),
+  ('f1000000-0000-0000-0000-000000000007', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, 'sent before the draft existed', 'b0000000-0000-0000-0000-000000000002', now() - interval '1 hour');
+
+select t.as_user(t.u(5));  -- reporter
+select t.ok('a reporter cannot record a draft outcome',
+  t.denied($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001', true)$$));
+select t.as_user(t.u(4));  -- GIT agent, other desk
+select t.ok('an agent from a desk with only read-only access to the ticket cannot record a draft outcome',
+  t.denied($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001', true)$$));
+
+select t.as_user(t.u(2));  -- Dallas admin
+select t.ok('a reply equal to the draft apart from whitespace is "as_written", even if never loaded',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001', false) = 'as_written');
+select t.ok('a changed reply to a loaded draft is "edited"',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000002', 'f1000000-0000-0000-0000-000000000002', true) = 'edited');
+select t.ok('a different reply to a draft that was never loaded is "rewritten"',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000003', 'f1000000-0000-0000-0000-000000000003', false) = 'rewritten');
+select t.ok('recording stores the message, who, and retires the draft',
+  t.count($$select 1 from helpdesk.ticket_drafts where id = 'f0000000-0000-0000-0000-000000000002'
+    and sent_message_id = 'f1000000-0000-0000-0000-000000000002' and used_draft and outcome = 'edited'
+    and outcome_by = 'b0000000-0000-0000-0000-000000000002' and outcome_at is not null and superseded_at is not null$$) = 1);
+select t.ok('the first recorded outcome wins; a later call changes nothing',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000003', true) = 'as_written'
+  and t.count($$select 1 from helpdesk.ticket_drafts where id = 'f0000000-0000-0000-0000-000000000001'
+    and sent_message_id = 'f1000000-0000-0000-0000-000000000001'$$) = 1);
+
+select t.ok('an internal note cannot be linked as the sent reply',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000004', true)$$, 'not a public reply'));
+select t.ok('an inbound message cannot be linked as the sent reply',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000005', true)$$, 'not a public reply'));
+select t.ok('a reply on another ticket cannot be linked',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000006', true)$$, 'not a public reply'));
+select t.ok('a reply sent before the draft existed cannot be linked',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000007', true)$$, 'not a public reply'));
+select t.ok('a refused call leaves the draft untouched',
+  t.count($$select 1 from helpdesk.ticket_drafts where id = 'f0000000-0000-0000-0000-000000000004' and outcome is null and sent_message_id is null$$) = 1);
+select t.ok('an agent cannot write the outcome columns directly',
+  t.denied($$update helpdesk.ticket_drafts set outcome = 'as_written' where id = 'f0000000-0000-0000-0000-000000000004'$$));
+
+select t.as_service();
+
 rollback;
 \echo ALL TESTS PASSED

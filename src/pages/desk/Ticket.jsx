@@ -31,6 +31,9 @@ export default function Ticket() {
   const [reassignName, setReassignName] = useState('')
   const [toast, setToast] = useState(null)
   const [draft, setDraft] = useState(null)
+  // Which draft the agent loaded into the compose box (if any), so that when
+  // they send we can tell "used it" from "wrote their own".
+  const [loadedDraftId, setLoadedDraftId] = useState(null)
   const [mergedIntoNumber, setMergedIntoNumber] = useState(null)
   const [ticketDesk, setTicketDesk] = useState(null)
   const [deskAgentIds, setDeskAgentIds] = useState([])
@@ -100,7 +103,7 @@ export default function Ticket() {
     setPeople(await profilesByIds(ids))
 
     const { data: activeDraft } = await hd.from('ticket_drafts')
-      .select('id, body, cited_sources, created_at')
+      .select('id, body, cited_sources, sender_trust, created_at')
       .eq('ticket_id', t.id)
       .is('superseded_at', null)
       .order('created_at', { ascending: false })
@@ -112,6 +115,7 @@ export default function Ticket() {
   function useDraft() {
     setMode('reply')
     setBody(draft.body)
+    setLoadedDraftId(draft.id)
   }
 
   async function dismissDraft() {
@@ -186,10 +190,22 @@ export default function Ticket() {
     setBody('')
     // A public reply retires whatever draft was active, whether it was used
     // as-is, edited, or ignored entirely — either way it's no longer "the"
-    // suggestion for this ticket once something's actually been sent.
+    // suggestion for this ticket once something's actually been sent. The
+    // database also records how the sent text compares with the draft, which
+    // the nightly knowledge-base review learns from. If recording fails, still
+    // retire the draft so it is not offered again.
     if (!isNote && draft) {
-      await hd.from('ticket_drafts').update({ superseded_at: new Date().toISOString() }).eq('id', draft.id)
+      const { error: outcomeErr } = await hd.rpc('record_draft_outcome', {
+        p_draft_id: draft.id,
+        p_message_id: inserted.id,
+        p_used: loadedDraftId === draft.id,
+      })
+      if (outcomeErr) {
+        console.error('record_draft_outcome failed:', outcomeErr.message)
+        await hd.from('ticket_drafts').update({ superseded_at: new Date().toISOString() }).eq('id', draft.id)
+      }
     }
+    setLoadedDraftId(null)
     reload()
   }
 
@@ -317,6 +333,12 @@ export default function Ticket() {
             <div className="rounded-xl border border-[#C9B8E8] bg-[#F4EFFB] p-5 flex flex-col gap-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold tracking-wider uppercase text-[#5B3A9E]">AI draft</span>
+                {draft.sender_trust === 'external' && (
+                  <span className="ml-2 text-xs font-semibold text-[#A6121F] bg-[#FBE8E9] rounded px-1.5 py-0.5" title="This person is writing from outside SIL, so the draft was kept to public steps. Check who they are before replying.">Outside SIL sender</span>
+                )}
+                {draft.sender_trust === 'sil_unverified' && (
+                  <span className="ml-2 text-xs font-semibold text-[#7A4F00] bg-[#FFF1D1] rounded px-1.5 py-0.5" title="The address says sil.org, but the email did not pass the check that proves it really came from there, so it could be forged. The draft was kept to self-service steps.">Sender not verified</span>
+                )}
                 <div className="flex gap-2">
                   <button onClick={dismissDraft} className="text-xs font-semibold text-gray-500 hover:text-gray-700">Dismiss</button>
                   <button onClick={useDraft} className="min-h-[32px] px-3 bg-[#5B3A9E] text-white rounded-lg text-xs font-semibold">Use this draft</button>
