@@ -303,6 +303,9 @@ create table if not exists helpdesk.ticket_drafts (
   body text not null,
   cited_sources jsonb,
   model text,
+  -- How far generate-draft trusted the sender (spec decision 22): derived from
+  -- the email's DMARC result, never from the email's own text.
+  sender_trust text check (sender_trust in ('sil_verified', 'sil_unverified', 'external')),
   superseded_at timestamptz,
   created_at timestamptz not null default now()
 );

@@ -1,7 +1,7 @@
 // Run with: node --experimental-strip-types --test supabase/functions/generate-draft/
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildSystemPrompt, buildUserMessage } from './prompt.ts'
+import { buildSystemPrompt, buildUserMessage, senderTrustNote } from './prompt.ts'
 
 test('buildSystemPrompt always includes the baseline rules and a sign-off', () => {
   const prompt = buildSystemPrompt({ toneNotes: null, signature: null, kbContent: null })
@@ -35,4 +35,18 @@ test('buildUserMessage includes the subject and each message labeled by author',
   assert.match(msg, /Can't log in/)
   assert.match(msg, /\[the reporter\]\nMy password reset link is broken\./)
   assert.match(msg, /\[Sam Torres\]\nCan you share the exact error\?/)
+})
+
+test('every prompt says to start with "Forgot password" and only escalate to identity checks if that failed', () => {
+  const prompt = buildSystemPrompt({ toneNotes: null, signature: null, kbContent: null })
+  assert.match(prompt, /Forgot password/)
+  assert.match(prompt, /confirm it is really them/)
+})
+
+test('an external sender gets the strict note; a verified SIL sender gets none', () => {
+  assert.match(buildSystemPrompt({ toneNotes: null, signature: null, kbContent: null, senderTrust: 'external' }), /outside SIL/)
+  assert.match(buildSystemPrompt({ toneNotes: null, signature: null, kbContent: null, senderTrust: 'sil_unverified' }), /could not verify/)
+  assert.doesNotMatch(buildSystemPrompt({ toneNotes: null, signature: null, kbContent: null, senderTrust: 'sil_verified' }), /SENDER:/)
+  assert.doesNotMatch(buildSystemPrompt({ toneNotes: null, signature: null, kbContent: null }), /SENDER:/)
+  assert.equal(senderTrustNote('sil_verified'), null)
 })

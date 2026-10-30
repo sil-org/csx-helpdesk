@@ -2,6 +2,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { buildSystemPrompt, buildUserMessage, SUBMIT_DRAFT_TOOL } from './prompt.ts'
 import type { ThreadMessage } from './prompt.ts'
 import { assembleKb } from './kb.ts'
+import { senderTrust, weakestTrust } from '../_shared/senderTrust.ts'
 import type { KbSource } from './kb.ts'
 
 // Generates (or regenerates) one ticket's AI draft reply (spec section 11).
@@ -51,7 +52,7 @@ Deno.serve(async (req) => {
     if (!ticket) return json({ error: 'ticket not found' }, 404)
 
     const { data: msgs, error: mErr } = await db.from('ticket_messages')
-      .select('direction, body, profile_id')
+      .select('direction, body, profile_id, author_email, raw_headers')
       .eq('ticket_id', ticket_id)
       .eq('internal', false)
       .order('created_at')
@@ -63,7 +64,18 @@ Deno.serve(async (req) => {
       .eq('desk_id', ticket.current_desk_id)
       .maybeSingle()
 
-    const kbContent = await loadKb(db, ticket.current_desk_id, settings?.kb_doc_id ?? null)
+    // Decided by us from the email's authentication (spec decision 22), never
+    // from what the email says. A message from the signed-in app (profile_id
+    // set) is verified by sign-in; the thread is as trusted as its weakest sender.
+    const trust = weakestTrust(msgs.filter((m) => m.direction === 'inbound').map((m) =>
+      m.profile_id
+        ? 'sil_verified' as const
+        : senderTrust({ fromEmail: m.author_email, originalAuthResults: m.raw_headers?.original_authentication_results }),
+    ))
+
+    // Unless the sender is verified SIL, [no-quote] sections are not just
+    // discouraged in the prompt, they are left out of what the model sees.
+    const kbContent = await loadKb(db, ticket.current_desk_id, settings?.kb_doc_id ?? null, trust !== 'sil_verified')
 
     const agentIds = [...new Set(msgs.filter((m) => m.direction === 'outbound' && m.profile_id).map((m) => m.profile_id))]
     const agentNames = new Map<string, string>()
@@ -82,6 +94,7 @@ Deno.serve(async (req) => {
     }))
 
     const system = buildSystemPrompt({
+      senderTrust: trust,
       toneNotes: settings?.tone_notes ?? null,
       signature: settings?.signature ?? null,
       kbContent,
@@ -130,6 +143,7 @@ Deno.serve(async (req) => {
       body: decision.reply,
       cited_sources: decision.cited_kb_section ? { kb_section: decision.cited_kb_section } : null,
       model: ANTHROPIC_MODEL,
+      sender_trust: trust,
     })
     if (insertErr) throw insertErr
 
@@ -140,7 +154,9 @@ Deno.serve(async (req) => {
   }
 })
 
-async function loadKb(db: ReturnType<typeof createClient>, deskId: string, kbDocId: string | null): Promise<string | null> {
+async function loadKb(
+  db: ReturnType<typeof createClient>, deskId: string, kbDocId: string | null, shareableOnly: boolean,
+): Promise<string | null> {
   // A desk with no KB Doc of its own yet keeps using the legacy merged one.
   if (!kbDocId) {
     const { data } = await db.from('kb_cache').select('content').eq('id', true).maybeSingle()
@@ -149,7 +165,7 @@ async function loadKb(db: ReturnType<typeof createClient>, deskId: string, kbDoc
 
   // A cache row from a previous Doc (source_doc_id differs) is ignored, so
   // changing a desk's Doc never serves the old Doc's text.
-  const { data: own } = await db.from('desk_kb_cache').select('content, source_doc_id').eq('desk_id', deskId).maybeSingle()
+  const { data: own } = await db.from('desk_kb_cache').select('content, shareable_content, source_doc_id').eq('desk_id', deskId).maybeSingle()
 
   const { data: links } = await db.from('desk_kb_sources')
     .select('source_desk_id').eq('desk_id', deskId).order('precedence').order('created_at')
@@ -171,7 +187,7 @@ async function loadKb(db: ReturnType<typeof createClient>, deskId: string, kbDoc
     }
   }
 
-  return assembleKb({ own: own?.source_doc_id === kbDocId ? own.content : null, sources })
+  return assembleKb({ own: own?.source_doc_id === kbDocId ? (shareableOnly ? own.shareable_content : own.content) : null, sources })
 }
 
 function json(data: unknown, status = 200) {
