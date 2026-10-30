@@ -495,5 +495,60 @@ select t.ok('an agent can list which desks are sharing a KB',
 
 select t.as_service();
 
+-- ── Draft outcomes ───────────────────────────────────────────────────────
+
+select t.as_service();
+insert into helpdesk.ticket_drafts (id, ticket_id, body) values
+  ('f0000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-000000000001', E'Hi Maria,\nTry the reset link.\nKind regards'),
+  ('f0000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-000000000001', 'Second draft text'),
+  ('f0000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-000000000001', 'Third draft text'),
+  ('f0000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-000000000001', 'Fourth draft text');
+insert into helpdesk.ticket_messages (id, ticket_id, direction, internal, body, profile_id, created_at) values
+  ('f1000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, E'Hi Maria,   Try the reset link.\r\nKind regards  ', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, 'Second draft text, plus a phone number', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, 'Something I wrote myself', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-000000000001', 'outbound', true,  'internal note', 'b0000000-0000-0000-0000-000000000002', now()),
+  ('f1000000-0000-0000-0000-000000000005', 'e0000000-0000-0000-0000-000000000001', 'inbound',  false, 'a requester message', null, now()),
+  ('f1000000-0000-0000-0000-000000000006', 'e0000000-0000-0000-0000-000000000002', 'outbound', false, 'a reply on another ticket', 'b0000000-0000-0000-0000-000000000007', now()),
+  ('f1000000-0000-0000-0000-000000000007', 'e0000000-0000-0000-0000-000000000001', 'outbound', false, 'sent before the draft existed', 'b0000000-0000-0000-0000-000000000002', now() - interval '1 hour');
+
+select t.as_user(t.u(5));  -- reporter
+select t.ok('a reporter cannot record a draft outcome',
+  t.denied($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001', true)$$));
+select t.as_user(t.u(4));  -- GIT agent, other desk
+select t.ok('an agent from a desk with only read-only access to the ticket cannot record a draft outcome',
+  t.denied($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001', true)$$));
+
+select t.as_user(t.u(2));  -- Dallas admin
+select t.ok('a reply equal to the draft apart from whitespace is "as_written", even if never loaded',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000001', false) = 'as_written');
+select t.ok('a changed reply to a loaded draft is "edited"',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000002', 'f1000000-0000-0000-0000-000000000002', true) = 'edited');
+select t.ok('a different reply to a draft that was never loaded is "rewritten"',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000003', 'f1000000-0000-0000-0000-000000000003', false) = 'rewritten');
+select t.ok('recording stores the message, who, and retires the draft',
+  t.count($$select 1 from helpdesk.ticket_drafts where id = 'f0000000-0000-0000-0000-000000000002'
+    and sent_message_id = 'f1000000-0000-0000-0000-000000000002' and used_draft and outcome = 'edited'
+    and outcome_by = 'b0000000-0000-0000-0000-000000000002' and outcome_at is not null and superseded_at is not null$$) = 1);
+select t.ok('the first recorded outcome wins; a later call changes nothing',
+  helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000001', 'f1000000-0000-0000-0000-000000000003', true) = 'as_written'
+  and t.count($$select 1 from helpdesk.ticket_drafts where id = 'f0000000-0000-0000-0000-000000000001'
+    and sent_message_id = 'f1000000-0000-0000-0000-000000000001'$$) = 1);
+
+select t.ok('an internal note cannot be linked as the sent reply',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000004', true)$$, 'not a public reply'));
+select t.ok('an inbound message cannot be linked as the sent reply',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000005', true)$$, 'not a public reply'));
+select t.ok('a reply on another ticket cannot be linked',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000006', true)$$, 'not a public reply'));
+select t.ok('a reply sent before the draft existed cannot be linked',
+  t.raises($$select helpdesk.record_draft_outcome('f0000000-0000-0000-0000-000000000004', 'f1000000-0000-0000-0000-000000000007', true)$$, 'not a public reply'));
+select t.ok('a refused call leaves the draft untouched',
+  t.count($$select 1 from helpdesk.ticket_drafts where id = 'f0000000-0000-0000-0000-000000000004' and outcome is null and sent_message_id is null$$) = 1);
+select t.ok('an agent cannot write the outcome columns directly',
+  t.denied($$update helpdesk.ticket_drafts set outcome = 'as_written' where id = 'f0000000-0000-0000-0000-000000000004'$$));
+
+select t.as_service();
+
 rollback;
 \echo ALL TESTS PASSED

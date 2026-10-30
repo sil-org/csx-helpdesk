@@ -303,13 +303,28 @@ create table if not exists helpdesk.ticket_drafts (
   body text not null,
   cited_sources jsonb,
   model text,
-  -- How far generate-draft trusted the sender (spec decision 22): derived from
-  -- the email's DMARC result, never from the email's own text.
-  sender_trust text check (sender_trust in ('sil_verified', 'sil_unverified', 'external')),
   superseded_at timestamptz,
   created_at timestamptz not null default now()
 );
 create index if not exists ticket_drafts_ticket_id_idx on helpdesk.ticket_drafts(ticket_id, created_at desc);
+
+-- How far generate-draft trusted the sender (spec decision 22): derived from
+-- the email's DMARC result, never from the email's own text.
+alter table helpdesk.ticket_drafts add column if not exists sender_trust text
+  check (sender_trust in ('sil_verified', 'sil_unverified', 'external'));
+
+-- What became of the draft (spec section 11, learning loop): which reply was
+-- sent while it was the active suggestion, whether the agent loaded it into the
+-- compose box, and how the sent text compares. Written only by
+-- record_draft_outcome (below). The nightly job reads these to find drafts
+-- agents had to correct.
+alter table helpdesk.ticket_drafts add column if not exists sent_message_id uuid
+  references helpdesk.ticket_messages(id) on delete set null;
+alter table helpdesk.ticket_drafts add column if not exists used_draft boolean;
+alter table helpdesk.ticket_drafts add column if not exists outcome text
+  check (outcome in ('as_written', 'edited', 'rewritten'));
+alter table helpdesk.ticket_drafts add column if not exists outcome_by uuid references public.profiles(id);
+alter table helpdesk.ticket_drafts add column if not exists outcome_at timestamptz;
 
 -- Cached full text of the knowledge-base Google Doc (decision 19: the Doc
 -- stays the single source of truth; v1 reads it in full, no embeddings).
@@ -1262,6 +1277,58 @@ grant insert, update, delete on helpdesk.desk_kb_sources to authenticated;
 grant all on helpdesk.desk_kb_cache, helpdesk.desk_kb_sources to service_role;
 revoke all on function helpdesk.shared_kb_desk_ids() from public;
 grant execute on function helpdesk.shared_kb_desk_ids() to authenticated, service_role;
+
+-- ── Draft outcomes (spec section 11) ─────────────────────────────────────
+-- Called by the ticket screen right after an agent sends a public reply, with
+-- the draft that was active and the message just saved. The outcome is worked
+-- out here, not by the browser: 'as_written' if the sent text equals the draft
+-- (ignoring whitespace), else 'edited' if the agent loaded the draft into the
+-- compose box first, else 'rewritten' (they wrote their own). A function
+-- rather than a column grant so an agent can only ever link a real public
+-- reply on the same ticket, sent after the draft, and the first send wins.
+create or replace function helpdesk.record_draft_outcome(p_draft_id uuid, p_message_id uuid, p_used boolean)
+returns text
+language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_draft helpdesk.ticket_drafts;
+  v_msg helpdesk.ticket_messages;
+  v_outcome text;
+begin
+  select * into v_draft from helpdesk.ticket_drafts where id = p_draft_id;
+  -- can_work_ticket, not is_ticket_staff: a desk with read-only access (the
+  -- sending desk after a transfer) must not write to the record.
+  if not found or not helpdesk.can_work_ticket(v_draft.ticket_id) then
+    raise exception 'not allowed' using errcode = '42501';
+  end if;
+
+  select * into v_msg from helpdesk.ticket_messages where id = p_message_id;
+  if not found or v_msg.ticket_id <> v_draft.ticket_id or v_msg.direction <> 'outbound'
+     or v_msg.internal or v_msg.created_at < v_draft.created_at then
+    raise exception 'that message is not a public reply sent after this draft on the same ticket' using errcode = '22023';
+  end if;
+
+  if v_draft.outcome is not null then
+    return v_draft.outcome;
+  end if;
+
+  v_outcome := case
+    when btrim(regexp_replace(v_msg.body, '\s+', ' ', 'g')) = btrim(regexp_replace(v_draft.body, '\s+', ' ', 'g')) then 'as_written'
+    when coalesce(p_used, false) then 'edited'
+    else 'rewritten'
+  end;
+
+  update helpdesk.ticket_drafts
+  set sent_message_id = p_message_id,
+      used_draft = coalesce(p_used, false),
+      outcome = v_outcome,
+      outcome_by = public.current_profile_id(),
+      outcome_at = now(),
+      superseded_at = coalesce(superseded_at, now())
+  where id = p_draft_id;
+  return v_outcome;
+end $$;
+revoke all on function helpdesk.record_draft_outcome(uuid, uuid, boolean) from public;
+grant execute on function helpdesk.record_draft_outcome(uuid, uuid, boolean) to authenticated, service_role;
 
 -- ── Grants ───────────────────────────────────────────────────────────────
 -- A custom schema gets no default privileges in Supabase. RLS (above) is the

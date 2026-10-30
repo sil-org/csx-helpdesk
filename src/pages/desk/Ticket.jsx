@@ -31,6 +31,9 @@ export default function Ticket() {
   const [reassignName, setReassignName] = useState('')
   const [toast, setToast] = useState(null)
   const [draft, setDraft] = useState(null)
+  // Which draft the agent loaded into the compose box (if any), so that when
+  // they send we can tell "used it" from "wrote their own".
+  const [loadedDraftId, setLoadedDraftId] = useState(null)
   const [mergedIntoNumber, setMergedIntoNumber] = useState(null)
   const [ticketDesk, setTicketDesk] = useState(null)
   const [deskAgentIds, setDeskAgentIds] = useState([])
@@ -112,6 +115,7 @@ export default function Ticket() {
   function useDraft() {
     setMode('reply')
     setBody(draft.body)
+    setLoadedDraftId(draft.id)
   }
 
   async function dismissDraft() {
@@ -186,10 +190,22 @@ export default function Ticket() {
     setBody('')
     // A public reply retires whatever draft was active, whether it was used
     // as-is, edited, or ignored entirely — either way it's no longer "the"
-    // suggestion for this ticket once something's actually been sent.
+    // suggestion for this ticket once something's actually been sent. The
+    // database also records how the sent text compares with the draft, which
+    // the nightly knowledge-base review learns from. If recording fails, still
+    // retire the draft so it is not offered again.
     if (!isNote && draft) {
-      await hd.from('ticket_drafts').update({ superseded_at: new Date().toISOString() }).eq('id', draft.id)
+      const { error: outcomeErr } = await hd.rpc('record_draft_outcome', {
+        p_draft_id: draft.id,
+        p_message_id: inserted.id,
+        p_used: loadedDraftId === draft.id,
+      })
+      if (outcomeErr) {
+        console.error('record_draft_outcome failed:', outcomeErr.message)
+        await hd.from('ticket_drafts').update({ superseded_at: new Date().toISOString() }).eq('id', draft.id)
+      }
     }
+    setLoadedDraftId(null)
     reload()
   }
 

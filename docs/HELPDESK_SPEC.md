@@ -75,7 +75,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 - `desk_kb_sources(desk_id, source_desk_id, precedence)`: which other desks' shared KBs a desk uses as sources, and in what order when they contradict. A row is only valid while the source desk has `kb_shared` on.
 - `kb_cache(desk_id, content, source_doc_id, refreshed_at)`: one cached copy of each desk's KB Doc (replaces the single-row table).
 - `corpus_documents`: becomes an index or cache of the Google Docs (for example if embeddings are added later), not a separate source of truth. Keeps the redaction flag and the exclusions for internal notes and sensitive tickets.
-- `ticket_drafts`: add `loaded_by` and `sent_message_id` so each draft can be compared with the reply that was actually sent. History before this change has no link and is not analyzed.
+- `ticket_drafts`: add `sender_trust`, and `sent_message_id`, `used_draft`, `outcome` (`as_written`, `edited` or `rewritten`), `outcome_by`, `outcome_at`, so each draft can be compared with the reply that was actually sent. They are written only by the `record_draft_outcome` function, which accepts only a public reply on the same ticket, sent after the draft, from the desk that currently works the ticket; the first send wins. Drafts from before this change have no outcome and are not analyzed.
 - `corpus_proposals(id, desk_id, kind, target_entry_ref, proposed_text, source_ticket_ids, origin, status, proposed_by, reviewed_by, reviewed_at, applied_at, comment_id)`: `kind` is new or amend; `origin` is on_resolve_rating, nightly_digest or draft_diff; `status` is pending, approved, rejected or applied; `comment_id` is the Doc comment the proposal was delivered in.
 - `kb_ratings(ticket_id, rating, note, rated_by, rated_at)` and `kb_entry_usage(entry_ref, covered_count)` for the one-click rating and use counts.
 - Reporters see Paused as "On hold" with no date, and never see Deleted.
@@ -208,8 +208,8 @@ Behaviour by confidence:
 5. **Reporter detection:** layers 1, 2 and 4, then layer 3 only if needed.
 6. **Transfers and external forwards.**
 7. **Per-desk knowledge bases and automatic AI drafts, then the learning loop:**
-   a. Per-desk KB Docs, share and use-as-source toggles, per-section visibility. *(Built: `migration_kb_per_desk.sql`, `refresh-kb-cache`, `generate-draft/kb.ts`, the admin Knowledge base card. Not yet deployed or run against live Docs.)*
-   b. Link each draft to the reply sent; capture the difference.
+   a. Per-desk KB Docs, share and use-as-source toggles, per-section visibility. *(Built: the schema (`schema_helpdesk.sql`), `refresh-kb-cache`, `generate-draft/kb.ts`, the admin Knowledge base card. Not yet deployed or run against live Docs.)*
+   b. Link each draft to the reply sent; capture the difference. *(Built: `record_draft_outcome` and the ticket screen. Not yet deployed.)*
    c. Nightly job: classify differences and ratings, deduplicate, write proposals.
    d. Delivery as one batched Doc comment per desk; approve, reject and applied tracked in the app.
 8. **SLA, reports, nudge, auto-close, satisfaction rating.**
