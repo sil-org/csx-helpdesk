@@ -1,5 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-import { getServiceAccountToken } from './googleAuth.ts'
+import { getServiceAccountToken } from '../_shared/googleAuth.ts'
 import { docToPlainText, docToKbText } from './docParse.ts'
 import type { GoogleDoc } from './docParse.ts'
 import { shouldRefresh } from './staleness.ts'

@@ -20,7 +20,7 @@ function pemToDer(pem: string): Uint8Array {
   return bytes
 }
 
-// Returns a bearer access token scoped to documents.readonly, good for ~1 hour.
+// Returns a bearer access token for the given scope(s), good for ~1 hour.
 export async function getServiceAccountToken(email: string, privateKeyPem: string, scope: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   const header = { alg: 'RS256', typ: 'JWT' }
