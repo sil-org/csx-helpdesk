@@ -442,3 +442,29 @@ Update that secret when a real domain replaces the Amplify URL.
 Optionally, `HELPDESK_NEW_TICKET_NOTIFY=a@sil.org,b@sil.org` adds extra
 recipients on every desk (e.g. someone who isn't an agent). Leave it unset
 otherwise.
+
+## Per-desk knowledge bases
+
+Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
+
+1. **Database.** On a project that already has `schema_helpdesk.sql`, run
+   `supabase/migration_kb_per_desk.sql` once (safe to repeat). Fresh setups get it
+   from `schema_helpdesk.sql`.
+2. **Doc access.** Share each desk's Doc with the help desk service account
+   (`HELPDESK_GOOGLE_SERVICE_ACCOUNT_EMAIL`). View access is enough for now; the
+   nightly suggestions will need comment access.
+3. **Link the Doc to the desk.** A super admin pastes the Doc link under
+   Admin > the desk > Knowledge base. Desk admins cannot do this: the service
+   account can read any Doc it has been given, so the Doc ID decides whose KB a
+   desk reads.
+4. **Refresh.** Deploy `refresh-kb-cache` and `generate-draft`. The daily
+   refresh reads every desk's Doc (one Doc failing does not stop the others);
+   to refresh one desk now, POST `{"desk_id": "<uuid>"}` with the
+   `x-helpdesk-secret` header. A desk with no Doc of its own keeps using the
+   old merged Doc until it has one.
+5. **Sharing.** Each desk admin chooses whether to share their KB and which
+   other desks' KBs to use. Put `[staff-only]` in a heading to keep that section
+   (and everything under it) out of what other desks see.
+
+Test the Doc parsing with `npm run test:kb` and the draft assembly with
+`npm run test:draft`.

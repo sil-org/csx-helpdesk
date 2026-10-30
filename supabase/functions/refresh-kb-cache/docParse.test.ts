@@ -1,7 +1,7 @@
 // Run with: node --experimental-strip-types --test supabase/functions/refresh-kb-cache/
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { docToPlainText } from './docParse.ts'
+import { docToPlainText, docToKbText } from './docParse.ts'
 
 test('docToPlainText joins paragraph text runs and collapses extra blank lines', () => {
   const doc = {
@@ -38,4 +38,39 @@ test('docToPlainText flattens a table into pipe-separated rows', () => {
 test('docToPlainText handles an empty document', () => {
   assert.equal(docToPlainText({}), '')
   assert.equal(docToPlainText({ body: { content: [] } }), '')
+})
+
+const h = (level: number, text: string) => ({
+  paragraph: { paragraphStyle: { namedStyleType: `HEADING_${level}` }, elements: [{ textRun: { content: text + '\n' } }] },
+})
+const p = (text: string) => ({ paragraph: { elements: [{ textRun: { content: text + '\n' } }] } })
+
+test('docToKbText hides a [staff-only] section from the requester-visible text but keeps it in full', () => {
+  const { full, requesterVisible } = docToKbText({
+    body: { content: [h(1, 'Accounts'), p('Reset at account.sil.org.'), h(2, 'Escalation [staff-only]'), p('Page Sam at 555-0100.'), h(2, 'Billing'), p('Invoices monthly.')] },
+  })
+  assert.match(full, /Page Sam/)
+  assert.match(requesterVisible, /Reset at account/)
+  assert.match(requesterVisible, /Invoices monthly/)
+  assert.doesNotMatch(requesterVisible, /Page Sam|Escalation/)
+})
+
+test('docToKbText: a staff-only section includes its sub-headings and ends at the next heading of the same or higher level', () => {
+  const { requesterVisible } = docToKbText({
+    body: { content: [h(1, 'A [Staff-Only]'), p('secret a'), h(2, 'A.1'), p('secret a1'), h(1, 'B'), p('public b'), h(2, 'B.1 [staff only]'), p('secret b1'), h(1, 'C'), p('public c')] },
+  })
+  assert.doesNotMatch(requesterVisible, /secret/)
+  assert.match(requesterVisible, /public b/)
+  assert.match(requesterVisible, /public c/)
+})
+
+test('docToKbText without any marker returns the same text twice', () => {
+  const { full, requesterVisible } = docToKbText({ body: { content: [h(1, 'Hi'), p('there')] } })
+  assert.equal(full, 'Hi\nthere')
+  assert.equal(requesterVisible, full)
+})
+
+test('docToKbText only treats real headings as section starts, not body text mentioning the marker', () => {
+  const { requesterVisible } = docToKbText({ body: { content: [h(1, 'Docs'), p('Mark a heading [staff-only] to hide it.'), p('still visible')] } })
+  assert.match(requesterVisible, /still visible/)
 })

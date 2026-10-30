@@ -24,6 +24,7 @@ export default function AdminDashboard() {
   const [creating, setCreating] = useState(false)
   const [addresses, setAddresses] = useState([])
   const [newAddress, setNewAddress] = useState('')
+  const [kb, setKb] = useState(null) // { refreshedAt, sharing: [{id, name}], usedIds: Set }
 
   const desks = isSuperAdmin ? allDesks : agentDesks.filter((d) => d.role === 'admin')
   const sel = desks.find((d) => d.id === selId) ?? desks[0] ?? null
@@ -36,9 +37,52 @@ export default function AdminDashboard() {
   }
 
   async function loadSettings(deskId) {
-    const { data, error } = await hd.from('desk_settings').select('tone_notes, signature').eq('desk_id', deskId).maybeSingle()
+    const { data, error } = await hd.from('desk_settings').select('tone_notes, signature, kb_doc_id, kb_shared').eq('desk_id', deskId).maybeSingle()
     if (error) { setError(error.message); return }
-    setSettings(data ?? { tone_notes: null, signature: null })
+    setSettings(data ?? { tone_notes: null, signature: null, kb_doc_id: null, kb_shared: false })
+  }
+
+  // Which other desks are sharing a KB, which of them this desk uses, and
+  // when this desk's own KB Doc was last read.
+  async function loadKb(deskId) {
+    const [cache, ids, used] = await Promise.all([
+      hd.from('desk_kb_cache').select('refreshed_at').eq('desk_id', deskId).maybeSingle(),
+      hd.rpc('shared_kb_desk_ids'),
+      hd.from('desk_kb_sources').select('source_desk_id').eq('desk_id', deskId),
+    ])
+    const failed = cache.error || ids.error || used.error
+    if (failed) { setError(failed.message); return }
+    const otherIds = (ids.data ?? []).filter((id) => id !== deskId)
+    let sharing = []
+    if (otherIds.length) {
+      const { data: names, error } = await hd.from('desks').select('id, name').in('id', otherIds).order('name')
+      if (error) { setError(error.message); return }
+      sharing = names ?? []
+    }
+    setKb({
+      refreshedAt: cache.data?.refreshed_at ?? null,
+      sharing,
+      usedIds: new Set((used.data ?? []).map((r) => r.source_desk_id)),
+    })
+  }
+
+  async function setUsesSource(sourceDeskId, uses) {
+    setError(null)
+    const { error } = uses
+      ? await hd.from('desk_kb_sources').insert({ desk_id: sel.id, source_desk_id: sourceDeskId })
+      : await hd.from('desk_kb_sources').delete().eq('desk_id', sel.id).eq('source_desk_id', sourceDeskId)
+    if (error) setError(error.message); else loadKb(sel.id)
+  }
+
+  // Accepts a Doc link or a bare Doc ID. Only a super admin can save this
+  // (the database enforces it): the app's service account can read any Doc
+  // it has been given, so the ID is what decides whose KB a desk reads.
+  async function saveKbDoc(value) {
+    const v = value.trim()
+    const id = v ? (v.match(/\/document\/d\/([\w-]+)/)?.[1] ?? v) : null
+    if (id === (settings.kb_doc_id ?? null)) return
+    await updateSettings({ kb_doc_id: id })
+    loadKb(sel.id)
   }
 
   async function loadAddresses(deskId) {
@@ -64,7 +108,7 @@ export default function AdminDashboard() {
   }
 
   useEffect(() => {
-    if (sel) { loadPeople(sel.id); loadSettings(sel.id); loadAddresses(sel.id) }
+    if (sel) { loadPeople(sel.id); loadSettings(sel.id); loadAddresses(sel.id); loadKb(sel.id) }
   }, [sel?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Every desk address is globally unique (desk_addresses.address is the
@@ -357,6 +401,66 @@ export default function AdminDashboard() {
                     placeholder="Kind regards, SIL Global Help Desk"
                     className="min-h-[60px] w-full px-2.5 py-2 border border-gray-300 rounded-lg text-sm resize-y"
                   />
+                </div>
+              </Card>
+            )}
+
+            {settings && kb && (
+              <Card>
+                <div className="text-base font-bold">Knowledge base</div>
+                <div className="text-xs text-gray-500 -mt-2">
+                  This desk&apos;s own Google Doc. AI drafts read it, and the nightly review will suggest improvements to it as comments for you to apply by hand.
+                </div>
+                <div>
+                  <Label>Google Doc</Label>
+                  <input
+                    key={sel.id}
+                    defaultValue={settings.kb_doc_id ?? ''}
+                    disabled={!isSuperAdmin}
+                    onBlur={(e) => saveKbDoc(e.target.value)}
+                    placeholder="Paste the Doc link"
+                    className="min-h-[40px] w-full px-2.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-50 disabled:text-gray-500"
+                  />
+                  <div className="text-xs text-gray-500 mt-1.5">
+                    {isSuperAdmin
+                      ? 'Share the Doc with the help desk service account first (comment access is enough).'
+                      : 'A super admin sets this, so one desk cannot point at another desk\u2019s Doc.'}
+                    {settings.kb_doc_id && (kb.refreshedAt
+                      ? ` Last read ${new Date(kb.refreshedAt).toLocaleString()}.`
+                      : ' Not read yet; it is read once a day.')}
+                  </div>
+                </div>
+                <div>
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={settings.kb_shared}
+                      onChange={(e) => updateSettings({ kb_shared: e.target.checked }).then(() => loadKb(sel.id))}
+                      className="w-4 h-4 mt-0.5"
+                    />
+                    <span>
+                      <span className="font-semibold">Share this knowledge base with other desks</span>
+                      <span className="block text-xs text-gray-500">
+                        Desks that choose to use it will have their AI drafts quote it to their own requesters, so treat it as published. Put [staff-only] in a heading to keep that section (and everything under it) private to this desk.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+                <div>
+                  <Label>Use another desk&apos;s knowledge base</Label>
+                  {kb.sharing.length === 0 ? (
+                    <div className="text-sm text-gray-500">No other desk is sharing a knowledge base yet.</div>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      {kb.sharing.map((d) => (
+                        <label key={d.id} className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={kb.usedIds.has(d.id)} onChange={(e) => setUsesSource(d.id, e.target.checked)} className="w-4 h-4" />
+                          {d.name}
+                        </label>
+                      ))}
+                      <div className="text-xs text-gray-500">This desk&apos;s own knowledge base always wins when they disagree.</div>
+                    </div>
+                  )}
                 </div>
               </Card>
             )}
