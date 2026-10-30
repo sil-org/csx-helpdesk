@@ -1,5 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-import { buildSystemPrompt, buildUserMessage, SUBMIT_DRAFT_TOOL } from './prompt.ts'
+import { buildSystemBlocks, buildUserMessage, parsePromptCache, SUBMIT_DRAFT_TOOL } from './prompt.ts'
 import type { ThreadMessage } from './prompt.ts'
 import { assembleKb } from './kb.ts'
 import { senderTrust, weakestTrust } from '../_shared/senderTrust.ts'
@@ -20,6 +20,9 @@ import type { KbSource } from './kb.ts'
 
 const ANTHROPIC_MODEL = Deno.env.get('HELPDESK_DRAFT_MODEL') || 'claude-sonnet-5-5'
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
+// '5m' (default), '1h' or 'off': how long the stable part of the prompt (rules,
+// desk tone, knowledge base) stays cached at Anthropic. See prompt.ts.
+const PROMPT_CACHE = parsePromptCache(Deno.env.get('HELPDESK_PROMPT_CACHE'))
 
 interface GenerateDraftRequest {
   ticket_id: string
@@ -93,7 +96,8 @@ Deno.serve(async (req) => {
       authorLabel: m.direction === 'inbound' ? 'the reporter' : (agentNames.get(m.profile_id) ?? 'an agent'),
     }))
 
-    const system = buildSystemPrompt({
+    const system = buildSystemBlocks({
+      cache: PROMPT_CACHE,
       senderTrust: trust,
       toneNotes: settings?.tone_notes ?? null,
       signature: settings?.signature ?? null,
@@ -124,6 +128,17 @@ Deno.serve(async (req) => {
       throw new Error(`Claude API ${anthropicRes.status}: ${detail}`)
     }
     const anthropicData = await anthropicRes.json()
+    // How much of the prompt was read from cache vs written vs paid in full, so
+    // the saving can be checked in the function logs. cache_read should be large
+    // on most drafts after the first for a desk; if it stays 0, see prompt.ts.
+    const u = anthropicData.usage ?? {}
+    console.log('generate-draft usage', JSON.stringify({
+      cache: PROMPT_CACHE,
+      input: u.input_tokens,
+      cache_read: u.cache_read_input_tokens,
+      cache_write: u.cache_creation_input_tokens,
+      output: u.output_tokens,
+    }))
     const toolUse = anthropicData.content?.find((b: { type: string }) => b.type === 'tool_use')
     if (!toolUse) throw new Error('Claude response had no submit_draft tool call')
     const decision = toolUse.input as { needs_draft: boolean; reply?: string; skip_reason?: string; cited_kb_section?: string }

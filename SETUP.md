@@ -475,3 +475,20 @@ Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
 
 Test the Doc parsing with `npm run test:kb` and the draft assembly with
 `npm run test:draft`.
+
+### Prompt caching for drafts (optional setting)
+
+Every draft sends the desk's whole knowledge base to Claude. Anthropic can keep
+that text cached so a repeat costs a tenth of the normal price. Set
+`HELPDESK_PROMPT_CACHE` as an edge-function secret:
+
+- `5m` (the default): cached for 5 minutes after each use. Best when a desk gets
+  several drafts close together; if drafts are sparse, each one pays a 25%
+  surcharge on the KB text for a cache nobody reuses.
+- `1h`: cached for an hour. Costs double to write, so it only pays if the same
+  desk gets about three or more drafts an hour.
+- `off`: no caching.
+
+Each draft logs its usage (`generate-draft usage` in the function logs, with
+`cache_read` and `cache_write` token counts). If `cache_read` is mostly 0 after
+the first draft for a desk, caching is not saving anything; try `1h`, or `off`.
