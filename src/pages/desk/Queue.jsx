@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { ChevronDown, ChevronUp, Filter } from 'lucide-react'
 import AppLayout from '../../components/AppLayout'
 import StatusPill from '../../components/StatusPill'
 import { useAuth } from '../../context/AuthContext'
@@ -7,15 +8,29 @@ import { useHelpdesk } from '../../context/HelpdeskContext'
 import { getLinks } from '../../navLinks'
 import { hd, profilesByIds, relativeTime, STATUS_LABEL, ACTIVE_STATUSES } from '../../lib/helpdesk'
 
-const CHIPS = [
-  ['active', 'All active'],
-  ['new', 'New'],
-  ['open', 'Open'],
-  ['waiting', 'Waiting for response'],
-  ['paused', 'Paused'],
-  ['resolved', 'Resolved'],
-  ['closed', 'Closed'],
-]
+const STATUS_ORDER = Object.keys(STATUS_LABEL)
+
+function reporterLabel(t) {
+  return t.requester?.display_name || t.requester?.email || t.sender_email || ''
+}
+
+function matchesSearch(t, q) {
+  return (t.subject || '').toLowerCase().includes(q)
+    || String(t.ticket_number).includes(q)
+    || reporterLabel(t).toLowerCase().includes(q)
+    || (t.sender_email || '').toLowerCase().includes(q)
+}
+
+function compareRows(a, b, sortBy) {
+  switch (sortBy) {
+    case 'ticket': return a.ticket_number - b.ticket_number
+    case 'reporter': return reporterLabel(a).localeCompare(reporterLabel(b))
+    case 'status': return STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)
+    case 'assignee': return (a.assigneeName || 'Unassigned').localeCompare(b.assigneeName || 'Unassigned')
+    case 'updated':
+    default: return new Date(a.updated_at) - new Date(b.updated_at)
+  }
+}
 
 export default function Queue() {
   const { slug } = useParams()
@@ -23,9 +38,12 @@ export default function Queue() {
   const { agentDesks, allDesks, isSuperAdmin, loading: accessLoading } = useHelpdesk()
   const [desk, setDesk] = useState(null)
   const [rows, setRows] = useState(null)
-  const [filter, setFilter] = useState('active')
+  const [statusFilter, setStatusFilter] = useState(new Set(ACTIVE_STATUSES))
+  const [assigneeFilter, setAssigneeFilter] = useState(null) // null = everyone; otherwise a Set of profile ids / 'unassigned'
+  const [openFilterCol, setOpenFilterCol] = useState(null) // null | 'status' | 'assignee'
+  const [sortBy, setSortBy] = useState('updated')
+  const [sortDir, setSortDir] = useState('desc')
   const [searchText, setSearchText] = useState('')
-  const [assigneeFilter, setAssigneeFilter] = useState('all') // 'all' | 'mine' | 'unassigned' | <profile_id>
   const [deskAgents, setDeskAgents] = useState([]) // [{id, display_name}]
   const [savedSearches, setSavedSearches] = useState([])
   const [savingSearch, setSavingSearch] = useState(false)
@@ -37,6 +55,7 @@ export default function Queue() {
   const [survivorId, setSurvivorId] = useState(null)
 
   const isDeskAdmin = isSuperAdmin || agentDesks.find((d) => d.slug === slug)?.role === 'admin'
+  const statusOptions = STATUS_ORDER.filter((k) => k !== 'deleted' || isDeskAdmin)
 
   useEffect(() => {
     if (accessLoading) return
@@ -76,26 +95,46 @@ export default function Queue() {
   if (accessLoading) return <Loading />
   if (!desk) return <NotFound slug={slug} />
 
-  const visible = (rows ?? []).filter((t) => t.status !== 'deleted')
-  const deleted = (rows ?? []).filter((t) => t.status === 'deleted')
-  const chips = [...CHIPS, ...(isDeskAdmin && deleted.length ? [['deleted', 'Deleted (admin)']] : [])]
-  const count = (key) => visible.filter((t) => (key === 'active' ? ACTIVE_STATUSES.includes(t.status) : t.status === key)).length
-  const byStatus = filter === 'deleted' ? deleted : visible.filter((t) => (filter === 'active' ? ACTIVE_STATUSES.includes(t.status) : t.status === filter))
-  const byAssignee = byStatus.filter((t) => {
-    if (assigneeFilter === 'all') return true
-    if (assigneeFilter === 'mine') return t.assignee_profile_id === profile.id
-    if (assigneeFilter === 'unassigned') return !t.assignee_profile_id
-    return t.assignee_profile_id === assigneeFilter
-  })
+  const byStatus = (rows ?? []).filter((t) => statusFilter.has(t.status))
+  const byAssignee = !assigneeFilter ? byStatus : byStatus.filter((t) => assigneeFilter.has(t.assignee_profile_id ?? 'unassigned'))
   const q = searchText.trim().toLowerCase()
-  const filtered = !q ? byAssignee : byAssignee.filter((t) =>
-    (t.subject || '').toLowerCase().includes(q)
-    || String(t.ticket_number).includes(q)
-    || (t.requester?.display_name || '').toLowerCase().includes(q)
-    || (t.requester?.email || '').toLowerCase().includes(q)
-    || (t.sender_email || '').toLowerCase().includes(q)
-  )
+  const searched = !q ? byAssignee : byAssignee.filter((t) => matchesSearch(t, q))
+  const filtered = [...searched].sort((a, b) => (sortDir === 'asc' ? 1 : -1) * compareRows(a, b, sortBy))
   const selectedRows = filtered.filter((t) => selected.has(t.id))
+
+  // Counts in each filter popover reflect the OTHER axis's current filter
+  // (and the search box), so narrowing assignee updates the status counts
+  // and vice versa — but never its own axis, or picking one status would
+  // zero out every other status's count.
+  const forStatusCounts = (rows ?? []).filter((t) =>
+    (!assigneeFilter || assigneeFilter.has(t.assignee_profile_id ?? 'unassigned')) && (!q || matchesSearch(t, q)))
+  const forAssigneeCounts = (rows ?? []).filter((t) => statusFilter.has(t.status) && (!q || matchesSearch(t, q)))
+  const statusCount = (key) => forStatusCounts.filter((t) => t.status === key).length
+  const assigneeCount = (value) => forAssigneeCounts.filter((t) => (t.assignee_profile_id ?? 'unassigned') === value).length
+
+  function toggleSort(col) {
+    if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortBy(col); setSortDir(col === 'updated' ? 'desc' : 'asc') }
+  }
+
+  function toggleStatusOption(key) {
+    setStatusFilter((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  function toggleAssigneeOption(value) {
+    setAssigneeFilter((prev) => {
+      const all = new Set(['unassigned', ...deskAgents.map((a) => a.id)])
+      const next = new Set(prev ?? all)
+      next.has(value) ? next.delete(value) : next.add(value)
+      // Back to covering everyone: collapse to null so the filter icon
+      // stops showing "active" for a selection that isn't filtering anything.
+      return next.size === all.size ? null : next
+    })
+  }
 
   function toggle(id) {
     setSelected((s) => {
@@ -138,9 +177,11 @@ export default function Queue() {
   }
 
   function applySearch(query) {
-    setFilter(query.status ?? 'active')
     setSearchText(query.text ?? '')
-    setAssigneeFilter(query.assignee ?? 'all')
+    setStatusFilter(new Set(query.status ?? ACTIVE_STATUSES))
+    setAssigneeFilter(query.assignee ? new Set(query.assignee) : null)
+    setSortBy(query.sortBy ?? 'updated')
+    setSortDir(query.sortDir ?? 'desc')
     clearSelection()
   }
 
@@ -152,7 +193,13 @@ export default function Queue() {
       profile_id: profile.id,
       desk_id: desk.id,
       name,
-      query: { text: searchText, status: filter, assignee: assigneeFilter },
+      query: {
+        text: searchText,
+        status: [...statusFilter],
+        assignee: assigneeFilter ? [...assigneeFilter] : null,
+        sortBy,
+        sortDir,
+      },
     })
     if (error) { setError(error.message); return }
     setNewSearchName('')
@@ -173,23 +220,6 @@ export default function Queue() {
             <div className="text-sm text-gray-500">{desk.name} &middot; reporter shown is the detected requester, not the sender</div>
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
-            {chips.map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => { setFilter(key); clearSelection() }}
-                className={`inline-flex items-center gap-1.5 min-h-[30px] px-2.5 rounded-full border text-xs font-medium ${
-                  filter === key ? 'bg-gray-900 border-gray-900 text-white' : 'bg-white border-gray-300 text-gray-700 hover:border-brand'
-                }`}
-              >
-                {label}
-                <span className={`text-[11px] font-semibold px-1.5 rounded-full leading-[18px] ${filter === key ? 'bg-white/20 text-white' : 'bg-[#E5EEF8] text-gray-700'}`}>
-                  {key === 'deleted' ? deleted.length : count(key)}
-                </span>
-              </button>
-            ))}
-          </div>
-
           <div className="flex flex-wrap items-center gap-2">
             <input
               value={searchText}
@@ -197,18 +227,6 @@ export default function Queue() {
               placeholder="Search subject, reporter, or ticket #&hellip;"
               className="min-h-[34px] flex-1 min-w-[220px] px-3 border border-gray-300 rounded-lg text-sm"
             />
-            <select
-              value={assigneeFilter}
-              onChange={(e) => setAssigneeFilter(e.target.value)}
-              className="min-h-[34px] text-sm border border-gray-300 rounded-lg px-2"
-            >
-              <option value="all">Anyone</option>
-              <option value="mine">Assigned to me</option>
-              <option value="unassigned">Unassigned</option>
-              {deskAgents.filter((a) => a.id !== profile.id).map((a) => (
-                <option key={a.id} value={a.id}>{a.display_name}</option>
-              ))}
-            </select>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
@@ -301,7 +319,59 @@ export default function Queue() {
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <div className="grid grid-cols-[32px_minmax(0,3fr)_minmax(0,2fr)_190px_minmax(0,1.2fr)_90px] gap-4 px-5 py-2.5 bg-gray-50 text-xs font-semibold tracking-wider uppercase text-gray-500 items-center">
               <input type="checkbox" checked={filtered.length > 0 && selected.size === filtered.length} onChange={toggleAll} className="w-4 h-4" />
-              <div>Ticket</div><div>Reporter</div><div>Status</div><div>Assignee</div><div>Updated</div>
+              <SortableHeader label="Ticket" col="ticket" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+              <SortableHeader label="Reporter" col="reporter" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+
+              <FilterableHeader
+                label="Status" col="status" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort}
+                active={statusFilter.size < statusOptions.length}
+                open={openFilterCol === 'status'}
+                onToggleOpen={() => setOpenFilterCol((c) => (c === 'status' ? null : 'status'))}
+              >
+                {statusOptions.map((key) => (
+                  <label key={key} className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 rounded cursor-pointer">
+                    <span className="flex items-center gap-2">
+                      <input type="checkbox" checked={statusFilter.has(key)} onChange={() => toggleStatusOption(key)} className="w-3.5 h-3.5" />
+                      {STATUS_LABEL[key]}
+                    </span>
+                    <span className="text-gray-400">{statusCount(key)}</span>
+                  </label>
+                ))}
+                <div className="flex items-center justify-between pt-1.5 mt-1 border-t border-gray-100">
+                  <button onClick={() => setStatusFilter(new Set(statusOptions))} className="text-[11px] font-semibold text-brand">All</button>
+                  <button onClick={() => setStatusFilter(new Set())} className="text-[11px] font-semibold text-gray-500">None</button>
+                </div>
+              </FilterableHeader>
+
+              <FilterableHeader
+                label="Assignee" col="assignee" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort}
+                active={!!assigneeFilter}
+                open={openFilterCol === 'assignee'}
+                onToggleOpen={() => setOpenFilterCol((c) => (c === 'assignee' ? null : 'assignee'))}
+              >
+                <label className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 rounded cursor-pointer">
+                  <span className="flex items-center gap-2">
+                    <input type="checkbox" checked={!assigneeFilter || assigneeFilter.has('unassigned')} onChange={() => toggleAssigneeOption('unassigned')} className="w-3.5 h-3.5" />
+                    Unassigned
+                  </span>
+                  <span className="text-gray-400">{assigneeCount('unassigned')}</span>
+                </label>
+                {deskAgents.map((a) => (
+                  <label key={a.id} className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 rounded cursor-pointer">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <input type="checkbox" checked={!assigneeFilter || assigneeFilter.has(a.id)} onChange={() => toggleAssigneeOption(a.id)} className="w-3.5 h-3.5 flex-none" />
+                      <span className="truncate">{a.display_name}{a.id === profile.id ? ' (you)' : ''}</span>
+                    </span>
+                    <span className="text-gray-400 flex-none">{assigneeCount(a.id)}</span>
+                  </label>
+                ))}
+                <div className="flex items-center justify-between pt-1.5 mt-1 border-t border-gray-100">
+                  <button onClick={() => setAssigneeFilter(null)} className="text-[11px] font-semibold text-brand">All</button>
+                  <button onClick={() => setAssigneeFilter(new Set())} className="text-[11px] font-semibold text-gray-500">None</button>
+                </div>
+              </FilterableHeader>
+
+              <SortableHeader label="Updated" col="updated" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
             </div>
             {rows === null && <div className="px-5 py-8 text-sm text-gray-400">Loading tickets&hellip;</div>}
             {rows !== null && filtered.length === 0 && <div className="px-5 py-8 text-sm text-gray-400">No tickets here.</div>}
@@ -332,9 +402,50 @@ export default function Queue() {
               </Link>
             ))}
           </div>
-          {isDeskAdmin && <div className="text-xs text-gray-500">Deleted tickets are hidden from agents and appear under the admin-only Deleted filter. A deleted ticket is recoverable for a while before it's permanently purged.</div>}
+          {isDeskAdmin && <div className="text-xs text-gray-500">Deleted tickets are hidden from non-admins; check Deleted in the Status filter to see them here. A deleted ticket is recoverable for a while before it's permanently purged.</div>}
       </div>
     </AppLayout>
+  )
+}
+
+function SortIndicator({ active, dir }) {
+  if (!active) return null
+  return dir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />
+}
+
+function SortableHeader({ label, col, sortBy, sortDir, onSort }) {
+  return (
+    <button onClick={() => onSort(col)} className="flex items-center gap-1 text-left hover:text-gray-900">
+      {label}
+      <SortIndicator active={sortBy === col} dir={sortDir} />
+    </button>
+  )
+}
+
+function FilterableHeader({ label, col, sortBy, sortDir, onSort, active, open, onToggleOpen, children }) {
+  return (
+    <div className="relative flex items-center gap-1">
+      <button onClick={() => onSort(col)} className="flex items-center gap-1 hover:text-gray-900">
+        {label}
+        <SortIndicator active={sortBy === col} dir={sortDir} />
+      </button>
+      <button
+        onClick={onToggleOpen}
+        aria-label={`Filter ${label}`}
+        title={`Filter ${label}`}
+        className={`p-0.5 rounded ${active ? 'text-brand' : 'text-gray-400 hover:text-gray-600'}`}
+      >
+        <Filter size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={onToggleOpen} />
+          <div className="absolute left-0 top-full mt-1 z-40 w-48 bg-white border border-gray-200 rounded-lg shadow-lg p-1.5 normal-case font-normal tracking-normal text-gray-700">
+            {children}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
