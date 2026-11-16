@@ -316,8 +316,9 @@ export default function Queue() {
             </div>
           )}
 
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="grid grid-cols-[32px_minmax(0,3fr)_minmax(0,2fr)_190px_minmax(0,1.2fr)_90px] gap-4 px-5 py-2.5 bg-gray-50 text-xs font-semibold tracking-wider uppercase text-gray-500 items-center">
+          {/* No overflow-hidden here: it would clip the column-filter popovers. Corners are rounded on the header and last row instead. */}
+          <div className="bg-white border border-gray-200 rounded-xl">
+            <div className="grid grid-cols-[32px_minmax(0,3fr)_minmax(0,2fr)_190px_minmax(0,1.2fr)_90px] gap-4 px-5 py-2.5 bg-gray-50 rounded-t-xltext-xs font-semibold tracking-wider uppercase text-gray-500 items-center">
               <input type="checkbox" checked={filtered.length > 0 && selected.size === filtered.length} onChange={toggleAll} className="w-4 h-4" />
               <SortableHeader label="Ticket" col="ticket" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
               <SortableHeader label="Reporter" col="reporter" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
@@ -379,7 +380,7 @@ export default function Queue() {
               <Link
                 key={t.id}
                 to={`/d/${slug}/t/${t.ticket_number}`}
-                className="grid grid-cols-[32px_minmax(0,3fr)_minmax(0,2fr)_190px_minmax(0,1.2fr)_90px] gap-4 items-center px-5 py-3.5 border-t border-gray-200 hover:bg-[#F2F7FB]"
+                className="grid grid-cols-[32px_minmax(0,3fr)_minmax(0,2fr)_190px_minmax(0,1.2fr)_90px] gap-4 items-center px-5 py-3.5 border-t border-gray-200 hover:bg-[#F2F7FB] last:rounded-b-xl"
               >
                 <input
                   type="checkbox"
