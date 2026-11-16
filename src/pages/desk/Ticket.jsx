@@ -8,6 +8,9 @@ import { getLinks } from '../../navLinks'
 import { hd, profilesByIds, relativeTime, STATUS_LABEL } from '../../lib/helpdesk'
 import { supabase } from '../../lib/supabase'
 
+const ATTACHMENT_BUCKET = 'helpdesk-attachments'
+const VISIBLE_RECENT_MESSAGES = 3
+
 export default function Ticket() {
   const { slug, ticketNumber } = useParams()
   const navigate = useNavigate()
@@ -16,6 +19,8 @@ export default function Ticket() {
   const [desk, setDesk] = useState(null)
   const [ticket, setTicket] = useState(undefined) // undefined = loading, null = not found
   const [messages, setMessages] = useState([])
+  const [attachments, setAttachments] = useState({})
+  const [expandedOld, setExpandedOld] = useState(false)
   const [participants, setParticipants] = useState([])
   const [events, setEvents] = useState([])
   const [people, setPeople] = useState({})
@@ -84,6 +89,7 @@ export default function Ticket() {
       hd.from('desks').select('id, slug, name').eq('accepts_transfers', true),
     ])
     setMessages(msgs ?? [])
+    setAttachments(await loadAttachments(t.id))
     setParticipants(parts ?? [])
     setEvents(evts ?? [])
     setTicketDesk(tDesk ?? null)
@@ -151,6 +157,7 @@ export default function Ticket() {
   }
 
   useEffect(() => { reload() }, [ticketNumber]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setExpandedOld(false) }, [ticketNumber])
 
   if (accessLoading || ticket === undefined) return <Loading />
   if (!desk) return <NotFound reason={`You don't have access to a desk called "${slug}".`} />
@@ -309,7 +316,18 @@ export default function Ticket() {
             </div>
           )}
 
-          {messages.map((m) => (
+          {messages.length > VISIBLE_RECENT_MESSAGES && (
+            <button
+              onClick={() => setExpandedOld((e) => !e)}
+              className="self-start text-xs font-semibold text-gray-500 hover:text-brand px-1 py-1"
+            >
+              {expandedOld
+                ? 'Hide earlier messages'
+                : `Show ${messages.length - VISIBLE_RECENT_MESSAGES} earlier message${messages.length - VISIBLE_RECENT_MESSAGES === 1 ? '' : 's'}`}
+            </button>
+          )}
+
+          {(expandedOld ? messages : messages.slice(-VISIBLE_RECENT_MESSAGES)).map((m) => (
             <div
               key={m.id}
               className={`rounded-xl border p-5 flex flex-col gap-2.5 ${m.internal ? 'bg-[#FFF8E8] border-[#FFE2A4]' : 'bg-white border-gray-200'}`}
@@ -326,6 +344,11 @@ export default function Ticket() {
                 <div className="text-xs text-gray-500">{new Date(m.created_at).toLocaleString()}</div>
               </div>
               <div className={`text-[15px] leading-relaxed whitespace-pre-wrap ${m.internal ? 'text-[#3d2800]' : 'text-gray-900'}`}>{m.body}</div>
+              {attachments[m.id]?.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {attachments[m.id].map((a) => <Attachment key={a.id} att={a} />)}
+                </div>
+              )}
             </div>
           ))}
 
@@ -667,6 +690,66 @@ export default function Ticket() {
         </div>
       </div>
     </AppLayout>
+  )
+}
+
+// Groups a ticket's attachments by message_id, with a signed URL attached to
+// each one that still has bytes in storage (none for a skipped or
+// since-removed attachment — those render as a note instead of a link).
+async function loadAttachments(ticketId) {
+  const { data: atts } = await hd.from('ticket_attachments').select('*').eq('ticket_id', ticketId).order('created_at')
+  const withUrls = await Promise.all((atts ?? []).map(async (a) => {
+    if (!a.storage_path || a.removed_at) return { ...a, signedUrl: null }
+    const { data } = await supabase.storage.from(ATTACHMENT_BUCKET).createSignedUrl(a.storage_path, 3600)
+    return { ...a, signedUrl: data?.signedUrl ?? null }
+  }))
+  const byMessage = {}
+  for (const a of withUrls) (byMessage[a.message_id] ??= []).push(a)
+  return byMessage
+}
+
+function formatBytes(n) {
+  if (!n) return null
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function Attachment({ att }) {
+  const size = formatBytes(att.size_bytes)
+  if (att.removed_at) {
+    return <div className="text-xs italic text-gray-400 border border-gray-200 rounded-lg px-2.5 py-1.5">{att.filename} (removed)</div>
+  }
+  if (!att.storage_path) {
+    return (
+      <div className="text-xs italic text-gray-400 border border-gray-200 rounded-lg px-2.5 py-1.5">
+        {att.filename} &mdash; not saved{att.skipped_reason ? ` (${att.skipped_reason})` : ''}
+      </div>
+    )
+  }
+  if (att.content_type?.startsWith('image/')) {
+    return (
+      <a href={att.signedUrl} target="_blank" rel="noreferrer" title={att.filename}>
+        <img
+          src={att.signedUrl}
+          alt={att.filename}
+          className="max-h-48 max-w-[220px] rounded-lg border border-gray-200 object-contain bg-gray-50"
+        />
+      </a>
+    )
+  }
+  return (
+    <a
+      href={att.signedUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="flex items-center gap-1.5 text-xs font-medium text-brand border border-gray-200 rounded-lg px-2.5 py-1.5 hover:border-brand"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95L10.13 17.14a2 2 0 0 1-2.83-2.83l8.49-8.49" />
+      </svg>
+      {att.filename}{size ? ` (${size})` : ''}
+    </a>
   )
 }
 
