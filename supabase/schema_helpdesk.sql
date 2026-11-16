@@ -420,6 +420,40 @@ as $$
   )
 $$;
 
+-- public.profiles' own RLS ("profiles: own read" in schema.sql) only lets a
+-- user read their own row, or a license-manager admin (not the same thing as
+-- a helpdesk super admin) read everyone's. Helpdesk staff legitimately need
+-- to resolve the name of OTHER people's ids they already see via helpdesk's
+-- own RLS (ticket assignees, agent_desks members, message authors, event
+-- actors) — these two functions do that lookup as security definer, gated
+-- on helpdesk staff membership rather than public.profiles' own policy.
+-- Never exposed to reporters: they have no id of someone else's to resolve.
+create or replace function helpdesk.staff_profiles(p_ids uuid[])
+returns table (id uuid, display_name text, primary_email text)
+language sql stable security definer set search_path = helpdesk, public
+as $$
+  select p.id, p.display_name, p.primary_email
+  from public.profiles p
+  where helpdesk.is_any_agent() and p.id = any(p_ids)
+$$;
+
+revoke all on function helpdesk.staff_profiles(uuid[]) from public;
+grant execute on function helpdesk.staff_profiles(uuid[]) to authenticated;
+
+-- Looks up a SIL profile by email so a desk admin can add them as an agent
+-- (helpdesk.set_desk_role takes a profile_id, not an email).
+create or replace function helpdesk.find_profile_by_email(p_email text)
+returns table (id uuid, display_name text, primary_email text)
+language sql stable security definer set search_path = helpdesk, public
+as $$
+  select p.id, p.display_name, p.primary_email
+  from public.profiles p
+  where helpdesk.is_any_agent() and p.primary_email = lower(p_email)
+$$;
+
+revoke all on function helpdesk.find_profile_by_email(text) from public;
+grant execute on function helpdesk.find_profile_by_email(text) to authenticated;
+
 -- Staff may work the ticket: agent of its current desk. Deleted tickets are
 -- visible only to desk admins / super admins (spec section 3).
 create or replace function helpdesk.can_work_ticket(p_ticket_id uuid) returns boolean
@@ -1128,6 +1162,19 @@ create policy ticket_attachments_select on helpdesk.ticket_attachments for selec
       and exists (select 1 from helpdesk.ticket_messages m
                   where m.id = message_id and not m.internal)
     )
+  );
+
+-- Attachment bytes sit in a private storage bucket, so a signed URL also
+-- needs an RLS pass on storage.objects (which ships with RLS already on).
+-- Rather than re-deriving the staff/reporter rule here, this just checks
+-- whether the row is visible in helpdesk.ticket_attachments under the
+-- caller's own RLS (ticket_attachments_select above) — one rule to keep in
+-- sync, not two that can drift apart.
+drop policy if exists ticket_attachments_storage_select on storage.objects;
+create policy ticket_attachments_storage_select on storage.objects for select to authenticated
+  using (
+    bucket_id = 'helpdesk-attachments'
+    and exists (select 1 from helpdesk.ticket_attachments a where a.storage_path = storage.objects.name)
   );
 
 -- participants, events, links: staff only (reporters and CCs never see them).

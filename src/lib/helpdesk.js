@@ -42,26 +42,22 @@ export function relativeTime(iso) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-// public.profiles lives outside the helpdesk schema, so ticket_messages.profile_id /
-// tickets.assignee_profile_id / agent_desks.profile_id are resolved with a
-// plain (non-schema-scoped) lookup rather than a cross-schema PostgREST embed.
+// public.profiles' own RLS only lets a signed-in user read their own row (or
+// a license-manager admin read everyone's — a different thing from a
+// helpdesk super admin), so resolving OTHER staff's names/emails goes
+// through helpdesk.staff_profiles()/find_profile_by_email() instead of a
+// plain `public.profiles` lookup, which would silently drop every row but
+// the caller's own.
 export async function profilesByIds(ids) {
   const uniq = [...new Set(ids.filter(Boolean))]
   if (!uniq.length) return {}
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, display_name, primary_email')
-    .in('id', uniq)
+  const { data, error } = await hd.rpc('staff_profiles', { p_ids: uniq })
   if (error) throw error
   return Object.fromEntries(data.map((p) => [p.id, p]))
 }
 
 export async function findProfileByEmail(email) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, display_name, primary_email')
-    .eq('primary_email', email.toLowerCase())
-    .maybeSingle()
+  const { data, error } = await hd.rpc('find_profile_by_email', { p_email: email.toLowerCase() })
   if (error) throw error
-  return data
+  return data?.[0] ?? null
 }
