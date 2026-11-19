@@ -540,9 +540,15 @@ folder; the sync copies every Google Doc in it into the database.
    (`skipped` names each Doc that is not inside a `public`, `internal` or
    `agents` folder), plus any errors. A Doc is only read again when Drive says it
    changed, and an article is only removed after a complete walk of the folder.
-   If an article does not appear: check it sits inside one of the three audience
-   folders, is not marked DRAFT, and that the folder is shared with the service
-   account.
+   The reply also shows `docs_found` (Google Docs seen) and `ignored` (files it
+   skipped because they are not Google Docs: uploaded Word files, PDFs, Sheets and
+   shortcuts, with their type). If an article does not appear: check it sits
+   inside one of the three audience folders, is a real Google Doc (not a shortcut
+   or uploaded file) and is not marked DRAFT. An error saying the folder is
+   "empty or not visible to the service account" means it is not shared with the
+   service account (for a Shared Drive, share the folder or add the account to the
+   drive); Drive reports an unshared folder as simply empty. In that case, and when
+   every Doc seems to vanish at once, nothing is removed.
 
 Test it with `npm run test:kbsync` (it runs the whole sync against a fake Drive
 and database).
