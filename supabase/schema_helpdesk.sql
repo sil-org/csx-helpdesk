@@ -1649,6 +1649,26 @@ select cron.schedule(
   $cron$
 );
 
+
+-- ── Hourly sync of KB Drive folders into articles (migration_kb_sync_schedule.sql) ─
+-- Same Vault secret as the daily refresh above; nothing new to configure.
+
+select cron.unschedule(jobid) from cron.job where jobname = 'helpdesk-sync-kb-articles';
+
+select cron.schedule(
+  'helpdesk-sync-kb-articles',
+  '23 * * * *', -- hourly, off the hour and away from the other jobs
+  $cron$
+  select net.http_post(
+    url := 'https://lxomebvymgolbzgkxqgu.supabase.co/functions/v1/sync-kb-articles',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-helpdesk-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'helpdesk_kb_refresh_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $cron$
+);
 -- ── Daily purge of expired soft-deleted tickets ──────────────────────────
 -- Spec decision 17: deleted tickets and their attachments are purged after
 -- a retention window (default 30 days, desk_settings can override). Same
