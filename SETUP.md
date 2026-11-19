@@ -496,19 +496,53 @@ folder; the sync copies every Google Doc in it into the database.
 3. **Folder access.** Share the folder with the service account
    (`HELPDESK_GOOGLE_SERVICE_ACCOUNT_EMAIL`), view access. The Drive API must be
    enabled in its Google Cloud project. The sync only reads Drive.
-4. **Link the folder to the desk.** Only a super admin can, in the SQL editor:
-   `update helpdesk.desk_settings set kb_folder_id = '<folder id>' where desk_id = '<desk uuid>';`
-   (the folder ID is the last part of its Drive URL). The same folder cannot be
-   given to two desks. Optional: `kb_internal_audience = 'ticket_requesters'`
-   limits `internal/` articles to people who have a ticket on that desk.
+4. **Link the folder to the desk.** Only a super admin can, in the SQL editor.
+   Look the desk up by its slug (`ghd` for the pilot desk), so you never need its
+   UUID, and paste the folder ID, which is the last part of the folder's Drive URL
+   after `/folders/`:
+
+   ```sql
+   update helpdesk.desk_settings
+   set kb_folder_id = '<folder id>'
+   where desk_id = (select id from helpdesk.desks where slug = 'ghd')
+   returning desk_id, kb_folder_id;
+   ```
+
+   `returning` shows the row it changed. If no row comes back, the desk has no
+   settings row yet: run the insert below, then the update again.
+
+   ```sql
+   insert into helpdesk.desk_settings (desk_id)
+   select id from helpdesk.desks where slug = 'ghd'
+   on conflict do nothing;
+   ```
+
+   The same folder cannot be given to two desks. Optional: add
+   `kb_internal_audience = 'ticket_requesters'` to the `set` list to limit
+   `internal/` articles to people who have a ticket on that desk. To see the
+   slug and UUID of every desk: `select id, slug, name from helpdesk.desks;`.
 5. **Deploy and run.** `supabase functions deploy sync-kb-articles --no-verify-jwt`.
    It uses the same `HELPDESK_KB_REFRESH_SECRET` and Vault secret
    (`helpdesk_kb_refresh_secret`) as `refresh-kb-cache`, and runs hourly. Run it
-   now with a POST to the function and the `x-helpdesk-secret` header; add
-   `{"desk_id": "<uuid>"}` for one desk and `"force": true` to re-read every Doc.
-   The reply lists, per desk, what was synced, unchanged, removed and skipped,
-   and any errors. A Doc is only read again when Drive says it changed, and an
-   article is only removed after a complete walk of the folder.
+   now by hand (use your own project ref and the secret value):
+
+   ```bash
+   curl -X POST https://YOUR_PROJECT_REF.supabase.co/functions/v1/sync-kb-articles \
+     -H "x-helpdesk-secret: $HELPDESK_KB_REFRESH_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{}'
+   ```
+
+   With `{}` it covers every desk that has a folder linked. To limit it to one
+   desk add `"desk_id": "<uuid>"` (the UUID, not the slug), and add
+   `"force": true` to re-read every Doc even if it looks unchanged.
+   The reply lists, per desk, what was synced, unchanged, removed and skipped
+   (`skipped` names each Doc that is not inside a `public`, `internal` or
+   `agents` folder), plus any errors. A Doc is only read again when Drive says it
+   changed, and an article is only removed after a complete walk of the folder.
+   If an article does not appear: check it sits inside one of the three audience
+   folders, is not marked DRAFT, and that the folder is shared with the service
+   account.
 
 Test it with `npm run test:kbsync` (it runs the whole sync against a fake Drive
 and database).
