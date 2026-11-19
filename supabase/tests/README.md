@@ -14,7 +14,7 @@ createdb hd_test
 psql -v ON_ERROR_STOP=1 -d hd_test -f supabase/tests/scratch_db_setup.sql   # roles + auth stubs
 psql -v ON_ERROR_STOP=1 -d hd_test -f supabase/schema.sql                   # shared auth kernel
 psql -d hd_test -c "grant all on all tables in schema public to authenticated, service_role"
-psql -v ON_ERROR_STOP=1 -d hd_test -f supabase/schema_helpdesk.sql
+grep -v '^create extension' supabase/schema_helpdesk.sql | psql -q -v ON_ERROR_STOP=1 -d hd_test   # pg_cron/pg_net don't exist locally; scratch_db_setup.sql stubs what the rest needs
 psql -v ON_ERROR_STOP=1 -d hd_test -f supabase/tests/helpdesk_rls.test.sql   # prints "ok - ..." per check, then ALL TESTS PASSED
 ```
 
