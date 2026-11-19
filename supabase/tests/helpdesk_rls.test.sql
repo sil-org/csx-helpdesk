@@ -647,6 +647,36 @@ select t.ok('deleting an article removes its image rows',
 
 select t.as_service();
 
+-- Requester help center helpers: which desks to show, and the sign-in hint.
+insert into helpdesk.desk_addresses (address, desk_id, is_default_reply, status) values
+  ('help@dallas.example', 'd0000000-0000-0000-0000-000000000001', true, 'pending'),
+  ('git-old@example.org', 'd0000000-0000-0000-0000-000000000002', false, 'pending'),
+  ('git@example.org', 'd0000000-0000-0000-0000-000000000002', false, 'receiving');
+-- A third desk whose only article is agent-only.
+insert into helpdesk.desks (id, slug, name) values ('d0000000-0000-0000-0000-000000000003', 'quiet', 'Quiet desk');
+insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable) values
+  ('d0000000-0000-0000-0000-000000000003', 'q1', 'private', 'Private', 'agents', 'private', 'private');
+
+select t.as_anon();
+select t.ok('a signed-out visitor is told about desks with a public article, not others',
+  (select array_agg(slug order by slug) from helpdesk.kb_desks()) = array['dallas', 'git']);
+select t.ok('a signed-out visitor still cannot read the desks table',
+  t.denied('select 1 from helpdesk.desks'));
+select t.ok('the support address is the default one, else one that is receiving',
+  (select support_address from helpdesk.kb_desks() where slug = 'dallas') = 'help@dallas.example'
+  and (select support_address from helpdesk.kb_desks() where slug = 'git') = 'git@example.org');
+select t.ok('a signed-out visitor is told how many staff-only articles match, never which',
+  helpdesk.kb_signin_hint('password') = 2
+  and helpdesk.kb_signin_hint('zzzznomatch') = 0);
+select t.as_user(t.u(6));  -- bystander
+select t.ok('a signed-in person sees no sign-in hint', helpdesk.kb_signin_hint('password') = 0);
+select t.ok('a desk with nothing the person can read is not listed',
+  (select array_agg(slug order by slug) from helpdesk.kb_desks()) = array['dallas', 'git']);
+select t.as_user(t.u(1));  -- super admin
+select t.ok('a super admin sees every desk that has an article',
+  (select array_agg(slug order by slug) from helpdesk.kb_desks()) = array['dallas', 'git', 'quiet']);
+select t.as_service();
+
 -- ── Draft outcomes ───────────────────────────────────────────────────────
 
 select t.as_service();
