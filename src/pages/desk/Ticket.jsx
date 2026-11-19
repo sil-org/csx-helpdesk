@@ -343,12 +343,7 @@ export default function Ticket() {
                 </div>
                 <div className="text-xs text-gray-500">{new Date(m.created_at).toLocaleString()}</div>
               </div>
-              <div className={`text-[15px] leading-relaxed whitespace-pre-wrap ${m.internal ? 'text-[#3d2800]' : 'text-gray-900'}`}>{m.body}</div>
-              {attachments[m.id]?.length > 0 && (
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {attachments[m.id].map((a) => <Attachment key={a.id} att={a} />)}
-                </div>
-              )}
+              <MessageBody text={m.body} atts={attachments[m.id]} internal={m.internal} />
             </div>
           ))}
 
@@ -367,7 +362,7 @@ export default function Ticket() {
                   <button onClick={useDraft} className="min-h-[32px] px-3 bg-[#5B3A9E] text-white rounded-lg text-xs font-semibold">Use this draft</button>
                 </div>
               </div>
-              <div className="text-[15px] leading-relaxed whitespace-pre-wrap text-gray-900">{draft.body}</div>
+              <div className="text-[15px] leading-relaxed whitespace-pre-wrap text-gray-900">{linkifyText(draft.body ?? '', 'draft')}</div>
               {draft.cited_sources?.kb_section && (
                 <div className="text-xs text-[#5B3A9E]">Drew on knowledge-base section: {draft.cited_sources.kb_section}</div>
               )}
@@ -713,6 +708,111 @@ function formatBytes(n) {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+// Email plain-text bodies render links as "label text <https://url>" and
+// inline images as "[image: filename]" placeholders. Turn those back into a
+// clickable link / an actual <img> so the message reads the way it looked in
+// the sender's mail client, instead of as a wall of escaped text.
+function MessageBody({ text, atts, internal }) {
+  const usedIds = new Set()
+  const imageRe = /\[image:\s*([^\]]+)\]/g
+  const parts = []
+  let lastIndex = 0
+  let m
+  const body = text ?? ''
+  while ((m = imageRe.exec(body))) {
+    if (m.index > lastIndex) parts.push({ type: 'text', value: body.slice(lastIndex, m.index) })
+    parts.push({ type: 'image', name: m[1].trim() })
+    lastIndex = m.index + m[0].length
+  }
+  if (lastIndex < body.length) parts.push({ type: 'text', value: body.slice(lastIndex) })
+
+  const nodes = parts.map((p, i) => {
+    if (p.type === 'text') return <span key={i}>{linkifyText(p.value, `b${i}`)}</span>
+    const att = (atts ?? []).find(
+      (a) => !usedIds.has(a.id) && a.filename?.trim().toLowerCase() === p.name.toLowerCase()
+    )
+    if (att?.signedUrl && att.content_type?.startsWith('image/')) {
+      usedIds.add(att.id)
+      return (
+        <a key={i} href={att.signedUrl} target="_blank" rel="noreferrer" title={att.filename} className="block my-1">
+          <img
+            src={att.signedUrl}
+            alt={att.filename}
+            className="max-h-72 max-w-full rounded-lg border border-gray-200 object-contain bg-gray-50"
+          />
+        </a>
+      )
+    }
+    // No matching attachment: a real filename means the image went missing
+    // (say so); a bare emoji/icon placeholder is decorative, so drop it.
+    if (p.name.includes('.')) {
+      return <span key={i} className="text-xs italic text-gray-400">[image: {p.name}]</span>
+    }
+    return null
+  })
+
+  const rest = (atts ?? []).filter((a) => !usedIds.has(a.id))
+  return (
+    <>
+      <div className={`text-[15px] leading-relaxed whitespace-pre-wrap ${internal ? 'text-[#3d2800]' : 'text-gray-900'}`}>
+        {nodes}
+      </div>
+      {rest.length > 0 && (
+        <div className="flex flex-wrap gap-2 pt-1">
+          {rest.map((a) => <Attachment key={a.id} att={a} />)}
+        </div>
+      )}
+    </>
+  )
+}
+
+// Matches the "label <https://url>" shape mail clients' plain-text parts use
+// for links, then catches any remaining bare URLs in what's left.
+function linkifyText(text, keyPrefix) {
+  const re = /([^\n<>]*?)<((?:https?:\/\/|mailto:)[^<>\s]+)>/g
+  const nodes = []
+  let lastIndex = 0
+  let m
+  let idx = 0
+  while ((m = re.exec(text))) {
+    if (m.index > lastIndex) nodes.push(text.slice(lastIndex, m.index))
+    const label = m[1].trim()
+    nodes.push(
+      <a key={`${keyPrefix}-l${idx++}`} href={m[2]} target="_blank" rel="noreferrer" className="text-brand underline hover:text-brand-dark">
+        {label || m[2]}
+      </a>
+    )
+    lastIndex = m.index + m[0].length
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex))
+
+  return nodes.flatMap((n, i) => (typeof n === 'string' ? linkifyBareUrls(n, `${keyPrefix}-${i}`) : n))
+}
+
+function linkifyBareUrls(text, keyPrefix) {
+  const re = /\bhttps?:\/\/[^\s<>]+/g
+  const nodes = []
+  let lastIndex = 0
+  let m
+  let idx = 0
+  while ((m = re.exec(text))) {
+    let url = m[0]
+    const trailMatch = url.match(/[.,;:!?)\]'"]+$/)
+    const trail = trailMatch ? trailMatch[0] : ''
+    if (trail) url = url.slice(0, -trail.length)
+    if (m.index > lastIndex) nodes.push(text.slice(lastIndex, m.index))
+    nodes.push(
+      <a key={`${keyPrefix}-u${idx++}`} href={url} target="_blank" rel="noreferrer" className="text-brand underline hover:text-brand-dark">
+        {url}
+      </a>
+    )
+    if (trail) nodes.push(trail)
+    lastIndex = m.index + m[0].length
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex))
+  return nodes.length ? nodes : [text]
 }
 
 function Attachment({ att }) {
