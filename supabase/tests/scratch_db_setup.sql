@@ -21,6 +21,7 @@ grant usage on schema public to anon, authenticated, service_role;
 -- through: grep -v '^create extension' supabase/schema_helpdesk.sql
 create schema extensions;
 create schema storage;
+create table storage.buckets (id text primary key, name text, public boolean default false);
 create table storage.objects (bucket_id text, name text);
 alter table storage.objects enable row level security;
 create schema vault;
@@ -32,3 +33,6 @@ create schema cron;
 create table cron.job (jobid bigint, jobname text);
 create function cron.unschedule(bigint) returns boolean language sql as $$ select true $$;
 create function cron.schedule(text, text, text) returns bigint language sql as $$ select 1::bigint $$;
+grant usage on schema storage to anon, authenticated, service_role;
+grant select on storage.objects to anon, authenticated;
+grant all on storage.objects, storage.buckets to service_role;

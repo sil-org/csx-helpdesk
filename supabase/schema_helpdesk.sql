@@ -1490,6 +1490,41 @@ grant execute on function helpdesk.search_kb(text, uuid, boolean, int) to authen
 revoke all on function helpdesk.kb_topics(uuid, boolean) from public;
 grant execute on function helpdesk.kb_topics(uuid, boolean) to authenticated, anon, service_role;
 
+-- ── Knowledge base article images (migration_kb_images.sql) ───────────────
+-- A private bucket; an image is readable exactly when its article is.
+
+insert into storage.buckets (id, name, public)
+values ('helpdesk-kb', 'helpdesk-kb', false)
+on conflict (id) do nothing;
+
+create table if not exists helpdesk.kb_article_images (
+  storage_path text primary key,
+  article_id uuid not null references helpdesk.kb_articles(id) on delete cascade,
+  -- The reference the sync replaced in the article text (image1, ...).
+  ref text not null,
+  mime text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists kb_article_images_article_idx on helpdesk.kb_article_images(article_id);
+
+alter table helpdesk.kb_article_images enable row level security;
+
+-- The subquery runs under the caller's own row-level rules, so an image row is
+-- visible only if its article is.
+drop policy if exists kb_article_images_select on helpdesk.kb_article_images;
+create policy kb_article_images_select on helpdesk.kb_article_images for select to authenticated, anon
+  using (exists (select 1 from helpdesk.kb_articles a where a.id = article_id));
+
+grant select on helpdesk.kb_article_images to anon, authenticated;
+grant all on helpdesk.kb_article_images to service_role;
+
+drop policy if exists kb_images_storage_select on storage.objects;
+create policy kb_images_storage_select on storage.objects for select to authenticated, anon
+  using (
+    bucket_id = 'helpdesk-kb'
+    and exists (select 1 from helpdesk.kb_article_images i where i.storage_path = storage.objects.name)
+  );
+
 -- ── Draft outcomes (spec section 11) ─────────────────────────────────────
 -- Called by the ticket screen right after an agent sends a public reply, with
 -- the draft that was active and the message just saved. The outcome is worked

@@ -613,6 +613,38 @@ select t.ok('an unknown audience is rejected',
   t.raises($$insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable)
     values ('d0000000-0000-0000-0000-000000000001', 'bad', 'bad', 't', 'mail-admins', 'b', 'b')$$, 'check'));
 
+-- Images follow their article: public, internal, agents, draft, archived (x1..x5).
+select t.as_service();
+insert into helpdesk.kb_article_images (storage_path, article_id, ref, mime)
+select 'd1/' || drive_id || '/image1.png', id, 'image1', 'image/png'
+from helpdesk.kb_articles where drive_id in ('x1', 'x2', 'x3', 'x4', 'x5');
+insert into storage.objects (bucket_id, name)
+select 'helpdesk-kb', storage_path from helpdesk.kb_article_images;
+insert into storage.objects (bucket_id, name) values ('helpdesk-kb', 'orphan/file.png'), ('helpdesk-attachments', 'd1/x1/image1.png');
+
+select t.as_anon();
+select t.ok('a signed-out visitor can read only the images of public articles',
+  t.count($$select 1 from helpdesk.kb_article_images$$) = 1
+  and t.count($$select 1 from storage.objects where bucket_id = 'helpdesk-kb'$$) = 1);
+select t.as_user(t.u(6));  -- bystander, signed in
+select t.ok('a signed-in person reads images of public and internal articles, not agent-only, draft or archived',
+  t.count($$select 1 from helpdesk.kb_article_images$$) = 2
+  and t.count($$select 1 from storage.objects where bucket_id = 'helpdesk-kb'$$) = 2);
+select t.ok('files not tied to a readable article stay hidden, and other buckets are untouched by the KB rule',
+  t.count($$select 1 from storage.objects where name = 'orphan/file.png'$$) = 0
+  and t.count($$select 1 from storage.objects where bucket_id = 'helpdesk-attachments'$$) = 0);
+select t.ok('nobody but the sync can write image rows',
+  t.denied($$insert into helpdesk.kb_article_images (storage_path, article_id, ref, mime)
+    select 'x', id, 'x', 'image/png' from helpdesk.kb_articles limit 1$$)
+  and t.denied($$delete from helpdesk.kb_article_images$$));
+select t.as_user(t.u(2));  -- Dallas desk admin
+select t.ok('a desk''s agents read all of that desk''s images',
+  t.count($$select 1 from helpdesk.kb_article_images$$) = 5);
+select t.as_service();
+select t.ok('deleting an article removes its image rows',
+  t.rows_affected($$delete from helpdesk.kb_articles where drive_id = 'x5'$$) = 1
+  and t.count($$select 1 from helpdesk.kb_article_images where storage_path like 'd1/x5/%'$$) = 0);
+
 select t.as_service();
 
 -- ── Draft outcomes ───────────────────────────────────────────────────────
