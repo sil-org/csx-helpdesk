@@ -41,6 +41,7 @@ export default function MyTickets() {
           )}
           <div className="text-[17px] font-bold">My tickets</div>
         </div>
+        <Link to="/help" className="text-sm font-semibold text-brand no-underline">Help center</Link>
         <div className="flex-1" />
         <div className="text-sm text-gray-500">{profile?.display_name}</div>
         <button onClick={signOut} className="text-sm font-medium text-gray-500 hover:text-gray-700">Sign out</button>
@@ -51,6 +52,13 @@ export default function MyTickets() {
           <h1 className="font-display text-[28px] m-0">My tickets</h1>
           <div className="text-sm text-gray-500 mt-1.5">Only requests where you are the reporter appear here.</div>
         </div>
+
+        {/* Look for an answer before waiting on a person. */}
+        <form action="/help" method="get" role="search" className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 h-12">
+          <label htmlFor="help-search" className="sr-only">Search the help center</label>
+          <input id="help-search" name="q" type="search" placeholder="Search the help center for an answer" className="flex-1 min-w-0 bg-transparent outline-none text-[15px]" />
+          <button type="submit" className="text-sm font-bold text-brand">Search</button>
+        </form>
 
         {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{error}</div>}
         {rows === null && <div className="text-sm text-gray-400">Loading&hellip;</div>}

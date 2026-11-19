@@ -476,6 +476,77 @@ Each desk has its own knowledge-base Google Doc (spec decisions 14 and 19-21).
 Test the Doc parsing with `npm run test:kb` and the draft assembly with
 `npm run test:draft`.
 
+### Help-center articles from a Drive folder (spec decision 23)
+
+Requesters read articles in the app. Each desk's articles live in one Drive
+folder; the sync copies every Google Doc in it into the database.
+
+1. **Database.** On an existing project run, in this order, the whole of
+   `supabase/migration_kb_articles.sql`, `supabase/migration_kb_images.sql` and
+   `supabase/migration_kb_sync_schedule.sql`. Each is complete and safe to run
+   again. Fresh setups skip them (`schema_helpdesk.sql` includes all three).
+2. **Folder layout.** Inside the desk's folder, the first folder sets who can
+   read a Doc: `public/` (anyone, even signed out), `internal/` (signed-in
+   people) and `agents/` (the desk's agents). The next folder down is the
+   article's topic. A folder named `Archive` archives what is in it; a folder
+   named `Drafts` is ignored; a Doc that starts with a line saying DRAFT, or
+   whose title starts "Draft:", stays out of the help center. **A Doc anywhere
+   else is not published** (the sync report lists it), so a misplaced Doc can
+   never become public by accident.
+3. **Folder access.** Share the folder with the service account
+   (`HELPDESK_GOOGLE_SERVICE_ACCOUNT_EMAIL`), view access. The Drive API must be
+   enabled in its Google Cloud project. The sync only reads Drive.
+4. **Link the folder to the desk.** Only a super admin can, in the SQL editor.
+   Look the desk up by its slug (`ghd` for the pilot desk), so you never need its
+   UUID, and paste the folder ID, which is the last part of the folder's Drive URL
+   after `/folders/`:
+
+   ```sql
+   update helpdesk.desk_settings
+   set kb_folder_id = '<folder id>'
+   where desk_id = (select id from helpdesk.desks where slug = 'ghd')
+   returning desk_id, kb_folder_id;
+   ```
+
+   `returning` shows the row it changed. If no row comes back, the desk has no
+   settings row yet: run the insert below, then the update again.
+
+   ```sql
+   insert into helpdesk.desk_settings (desk_id)
+   select id from helpdesk.desks where slug = 'ghd'
+   on conflict do nothing;
+   ```
+
+   The same folder cannot be given to two desks. Optional: add
+   `kb_internal_audience = 'ticket_requesters'` to the `set` list to limit
+   `internal/` articles to people who have a ticket on that desk. To see the
+   slug and UUID of every desk: `select id, slug, name from helpdesk.desks;`.
+5. **Deploy and run.** `supabase functions deploy sync-kb-articles --no-verify-jwt`.
+   It uses the same `HELPDESK_KB_REFRESH_SECRET` and Vault secret
+   (`helpdesk_kb_refresh_secret`) as `refresh-kb-cache`, and runs hourly. Run it
+   now by hand (use your own project ref and the secret value):
+
+   ```bash
+   curl -X POST https://YOUR_PROJECT_REF.supabase.co/functions/v1/sync-kb-articles \
+     -H "x-helpdesk-secret: $HELPDESK_KB_REFRESH_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{}'
+   ```
+
+   With `{}` it covers every desk that has a folder linked. To limit it to one
+   desk add `"desk_id": "<uuid>"` (the UUID, not the slug), and add
+   `"force": true` to re-read every Doc even if it looks unchanged.
+   The reply lists, per desk, what was synced, unchanged, removed and skipped
+   (`skipped` names each Doc that is not inside a `public`, `internal` or
+   `agents` folder), plus any errors. A Doc is only read again when Drive says it
+   changed, and an article is only removed after a complete walk of the folder.
+   If an article does not appear: check it sits inside one of the three audience
+   folders, is not marked DRAFT, and that the folder is shared with the service
+   account.
+
+Test it with `npm run test:kbsync` (it runs the whole sync against a fake Drive
+and database).
+
 ### Prompt caching for drafts (optional setting)
 
 Every draft sends the desk's whole knowledge base to Claude. Anthropic can keep

@@ -495,6 +495,188 @@ select t.ok('an agent can list which desks are sharing a KB',
 
 select t.as_service();
 
+-- ── Knowledge base articles: audiences, drafts, search ───────────────────
+
+select t.as_owner();
+grant usage on schema t to anon;
+create function t.as_anon() returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claim.sub', '', true);
+  execute 'set local role anon';
+end $$;
+
+-- Dallas (d1): public, internal, agents, a draft, an archived page.
+-- Global IT (d2): public, internal, agents.
+select t.as_service();
+insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, topic, body, body_shareable, is_draft, archived) values
+  ('d0000000-0000-0000-0000-000000000001', 'x1', 'reset-password', 'Reset your password', 'public', 'Sign-in', 'Use the reset link to choose a new password.', 'Use the reset link to choose a new password.', false, false),
+  ('d0000000-0000-0000-0000-000000000001', 'x2', 'security-keys', 'Security keys', 'internal', 'Sign-in', 'Re-register your security key. Never reuse a password.', 'Re-register your security key. Never reuse a password.', false, false),
+  ('d0000000-0000-0000-0000-000000000001', 'x3', 'unlock-account', 'Account unlock procedure', 'agents', null, 'Agents only: unlock the password from the console.', 'Agents only: unlock the password from the console.', false, false),
+  ('d0000000-0000-0000-0000-000000000001', 'x4', 'phishing-draft', 'Phishing draft', 'internal', null, 'Draft text about password phishing.', 'Draft text about password phishing.', true, false),
+  ('d0000000-0000-0000-0000-000000000001', 'x5', 'old-password-page', 'Old password page', 'public', null, 'An old password page.', 'An old password page.', false, true),
+  ('d0000000-0000-0000-0000-000000000002', 'y1', 'sign-in-help', 'Sign-in help', 'public', null, 'Password help for sign in.', 'Password help for sign in.', false, false),
+  ('d0000000-0000-0000-0000-000000000002', 'y2', 'vpn-setup', 'VPN setup', 'internal', null, 'Configure the VPN with your password.', 'Configure the VPN with your password.', false, false),
+  ('d0000000-0000-0000-0000-000000000002', 'y3', 'runbook', 'GIT runbook', 'agents', null, 'Runbook for password rotation.', 'Runbook for password rotation.', false, false);
+
+select t.as_anon();
+select t.ok('a signed-out visitor sees only published public articles',
+  t.count('select 1 from helpdesk.kb_articles') = 2
+  and t.count($$select 1 from helpdesk.kb_articles where tier <> 'public' or is_draft or archived$$) = 0);
+select t.ok('a signed-out visitor can search public articles only',
+  t.count($$select 1 from helpdesk.search_kb('password')$$) = 2);
+select t.ok('a signed-out visitor can list topics for public articles only',
+  t.count('select 1 from helpdesk.kb_topics()') = 2);
+select t.ok('a signed-out visitor still cannot read tickets or settings',
+  t.denied('select 1 from helpdesk.tickets') and t.denied('select 1 from helpdesk.desk_settings'));
+select t.ok('a signed-out visitor cannot write articles',
+  t.denied($$update helpdesk.kb_articles set title = 'x'$$)
+  and t.denied($$delete from helpdesk.kb_articles$$));
+
+select t.as_user(t.u(6));  -- bystander: signed in, no tickets; both desks default to signed_in
+select t.ok('a signed-in person sees public and internal articles on every desk, nothing else',
+  t.count('select 1 from helpdesk.kb_articles') = 4
+  and t.count($$select 1 from helpdesk.kb_articles where tier = 'agents' or is_draft or archived$$) = 0);
+select t.ok('a signed-in person cannot write articles',
+  t.denied($$insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable)
+    values ('d0000000-0000-0000-0000-000000000001', 'z', 'z', 'z', 'public', 'z', 'z')$$)
+  and t.denied($$update helpdesk.kb_articles set tier = 'agents'$$)
+  and t.denied($$delete from helpdesk.kb_articles$$));
+
+-- Dallas now limits internal articles to people with a ticket on the desk.
+select t.as_service();
+update helpdesk.desk_settings set kb_internal_audience = 'ticket_requesters' where desk_id = 'd0000000-0000-0000-0000-000000000001';
+
+select t.as_user(t.u(6));  -- bystander
+select t.ok('with ticket_requesters, a person with no ticket loses that desk''s internal articles only',
+  t.count('select 1 from helpdesk.kb_articles') = 3
+  and t.count($$select 1 from helpdesk.kb_articles where desk_id = 'd0000000-0000-0000-0000-000000000001' and tier = 'internal'$$) = 0);
+select t.ok('search follows the same rule',
+  t.count($$select 1 from helpdesk.search_kb('password')$$) = 3
+  and t.count($$select 1 from helpdesk.search_kb('security key')$$) = 0);
+select t.as_user(t.u(5));  -- reporter with a live ticket on Dallas
+select t.ok('a person with a ticket on the desk sees its internal articles',
+  t.count('select 1 from helpdesk.kb_articles') = 4
+  and t.count($$select 1 from helpdesk.search_kb('security key')$$) = 1);
+select t.ok('a reporter still does not see agent-only articles or drafts',
+  t.count($$select 1 from helpdesk.kb_articles where tier = 'agents' or is_draft or archived$$) = 0);
+select t.ok('search snippets mark matches with U+27E6, not HTML',
+  (select snippet from helpdesk.search_kb('security key') limit 1) like '%⟦%⟧%'
+  and (select snippet from helpdesk.search_kb('security key') limit 1) not like '%<b>%');
+select t.ok('requesting unpublished articles does not reveal them to a non-agent',
+  t.count($$select 1 from helpdesk.search_kb('password', null, true)$$) = 4
+  and t.count($$select 1 from helpdesk.kb_topics(null, true)$$) >= 1);
+select t.ok('topics count only what the person can read',
+  (select article_count from helpdesk.kb_topics('d0000000-0000-0000-0000-000000000001') where topic = 'Sign-in') = 2
+  and (select article_count from helpdesk.kb_topics('d0000000-0000-0000-0000-000000000002') where topic = 'General') = 2);
+
+select t.as_user(t.u(2));  -- Dallas desk admin
+select t.ok('a desk''s agents read every audience on their desk, including drafts and archived',
+  t.count($$select 1 from helpdesk.kb_articles where desk_id = 'd0000000-0000-0000-0000-000000000001'$$) = 5);
+select t.ok('a desk''s agents get only the other desk''s readable articles',
+  t.count($$select 1 from helpdesk.kb_articles where desk_id = 'd0000000-0000-0000-0000-000000000002'$$) = 2);
+select t.ok('agents search published articles by default, and drafts when they ask',
+  t.count($$select 1 from helpdesk.search_kb('password', 'd0000000-0000-0000-0000-000000000001')$$) = 3
+  and t.count($$select 1 from helpdesk.search_kb('password', 'd0000000-0000-0000-0000-000000000001', true)$$) = 5);
+select t.ok('an agent cannot write articles',
+  t.denied($$update helpdesk.kb_articles set title = 'x'$$));
+select t.as_user(t.u(4));  -- Global IT agent
+select t.ok('an agent of another desk gets that desk''s public articles but not its internal ones (ticket_requesters)',
+  t.count($$select 1 from helpdesk.kb_articles where desk_id = 'd0000000-0000-0000-0000-000000000001'$$) = 1
+  and t.count($$select 1 from helpdesk.kb_articles where desk_id = 'd0000000-0000-0000-0000-000000000002'$$) = 3);
+select t.as_user(t.u(1));  -- super admin
+select t.ok('a super admin reads every article', t.count('select 1 from helpdesk.kb_articles') = 8);
+
+-- Desk settings: who may change what.
+select t.as_user(t.u(2));  -- Dallas desk admin
+select t.ok('a desk admin cannot set the desk''s KB folder',
+  t.denied($$update helpdesk.desk_settings set kb_folder_id = 'folder-dallas' where desk_id = 'd0000000-0000-0000-0000-000000000001'$$));
+select t.ok('a desk admin can choose who reads internal articles',
+  t.rows_affected($$update helpdesk.desk_settings set kb_internal_audience = 'signed_in' where desk_id = 'd0000000-0000-0000-0000-000000000001'$$) = 1);
+select t.ok('only the two known audiences are accepted',
+  t.raises($$update helpdesk.desk_settings set kb_internal_audience = 'everyone' where desk_id = 'd0000000-0000-0000-0000-000000000001'$$, 'check'));
+select t.as_user(t.u(1));  -- super admin
+select t.ok('a super admin can set a desk''s KB folder',
+  t.rows_affected($$update helpdesk.desk_settings set kb_folder_id = 'folder-dallas' where desk_id = 'd0000000-0000-0000-0000-000000000001'$$) = 1);
+select t.ok('two desks cannot claim the same KB folder',
+  t.raises($$update helpdesk.desk_settings set kb_folder_id = 'folder-dallas' where desk_id = 'd0000000-0000-0000-0000-000000000002'$$, 'duplicate key'));
+select t.as_service();
+select t.ok('the service role can set a KB folder',
+  t.rows_affected($$update helpdesk.desk_settings set kb_folder_id = 'folder-git' where desk_id = 'd0000000-0000-0000-0000-000000000002'$$) = 1);
+select t.ok('the service role can write articles',
+  t.rows_affected($$update helpdesk.kb_articles set synced_at = now() where drive_id = 'x1'$$) = 1);
+select t.ok('one article per Drive file and slug on a desk',
+  t.raises($$insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable)
+    values ('d0000000-0000-0000-0000-000000000001', 'x1', 'other', 't', 'public', 'b', 'b')$$, 'duplicate key')
+  and t.raises($$insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable)
+    values ('d0000000-0000-0000-0000-000000000001', 'new', 'reset-password', 't', 'public', 'b', 'b')$$, 'duplicate key'));
+select t.ok('an unknown audience is rejected',
+  t.raises($$insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable)
+    values ('d0000000-0000-0000-0000-000000000001', 'bad', 'bad', 't', 'mail-admins', 'b', 'b')$$, 'check'));
+
+-- Images follow their article: public, internal, agents, draft, archived (x1..x5).
+select t.as_service();
+insert into helpdesk.kb_article_images (storage_path, article_id, ref, mime)
+select 'd1/' || drive_id || '/image1.png', id, 'image1', 'image/png'
+from helpdesk.kb_articles where drive_id in ('x1', 'x2', 'x3', 'x4', 'x5');
+insert into storage.objects (bucket_id, name)
+select 'helpdesk-kb', storage_path from helpdesk.kb_article_images;
+insert into storage.objects (bucket_id, name) values ('helpdesk-kb', 'orphan/file.png'), ('helpdesk-attachments', 'd1/x1/image1.png');
+
+select t.as_anon();
+select t.ok('a signed-out visitor can read only the images of public articles',
+  t.count($$select 1 from helpdesk.kb_article_images$$) = 1
+  and t.count($$select 1 from storage.objects where bucket_id = 'helpdesk-kb'$$) = 1);
+select t.as_user(t.u(6));  -- bystander, signed in
+select t.ok('a signed-in person reads images of public and internal articles, not agent-only, draft or archived',
+  t.count($$select 1 from helpdesk.kb_article_images$$) = 2
+  and t.count($$select 1 from storage.objects where bucket_id = 'helpdesk-kb'$$) = 2);
+select t.ok('files not tied to a readable article stay hidden, and other buckets are untouched by the KB rule',
+  t.count($$select 1 from storage.objects where name = 'orphan/file.png'$$) = 0
+  and t.count($$select 1 from storage.objects where bucket_id = 'helpdesk-attachments'$$) = 0);
+select t.ok('nobody but the sync can write image rows',
+  t.denied($$insert into helpdesk.kb_article_images (storage_path, article_id, ref, mime)
+    select 'x', id, 'x', 'image/png' from helpdesk.kb_articles limit 1$$)
+  and t.denied($$delete from helpdesk.kb_article_images$$));
+select t.as_user(t.u(2));  -- Dallas desk admin
+select t.ok('a desk''s agents read all of that desk''s images',
+  t.count($$select 1 from helpdesk.kb_article_images$$) = 5);
+select t.as_service();
+select t.ok('deleting an article removes its image rows',
+  t.rows_affected($$delete from helpdesk.kb_articles where drive_id = 'x5'$$) = 1
+  and t.count($$select 1 from helpdesk.kb_article_images where storage_path like 'd1/x5/%'$$) = 0);
+
+select t.as_service();
+
+-- Requester help center helpers: which desks to show, and the sign-in hint.
+insert into helpdesk.desk_addresses (address, desk_id, is_default_reply, status) values
+  ('help@dallas.example', 'd0000000-0000-0000-0000-000000000001', true, 'pending'),
+  ('git-old@example.org', 'd0000000-0000-0000-0000-000000000002', false, 'pending'),
+  ('git@example.org', 'd0000000-0000-0000-0000-000000000002', false, 'receiving');
+-- A third desk whose only article is agent-only.
+insert into helpdesk.desks (id, slug, name) values ('d0000000-0000-0000-0000-000000000003', 'quiet', 'Quiet desk');
+insert into helpdesk.kb_articles (desk_id, drive_id, slug, title, tier, body, body_shareable) values
+  ('d0000000-0000-0000-0000-000000000003', 'q1', 'private', 'Private', 'agents', 'private', 'private');
+
+select t.as_anon();
+select t.ok('a signed-out visitor is told about desks with a public article, not others',
+  (select array_agg(slug order by slug) from helpdesk.kb_desks()) = array['dallas', 'git']);
+select t.ok('a signed-out visitor still cannot read the desks table',
+  t.denied('select 1 from helpdesk.desks'));
+select t.ok('the support address is the default one, else one that is receiving',
+  (select support_address from helpdesk.kb_desks() where slug = 'dallas') = 'help@dallas.example'
+  and (select support_address from helpdesk.kb_desks() where slug = 'git') = 'git@example.org');
+select t.ok('a signed-out visitor is told how many staff-only articles match, never which',
+  helpdesk.kb_signin_hint('password') = 2
+  and helpdesk.kb_signin_hint('zzzznomatch') = 0);
+select t.as_user(t.u(6));  -- bystander
+select t.ok('a signed-in person sees no sign-in hint', helpdesk.kb_signin_hint('password') = 0);
+select t.ok('a desk with nothing the person can read is not listed',
+  (select array_agg(slug order by slug) from helpdesk.kb_desks()) = array['dallas', 'git']);
+select t.as_user(t.u(1));  -- super admin
+select t.ok('a super admin sees every desk that has an article',
+  (select array_agg(slug order by slug) from helpdesk.kb_desks()) = array['dallas', 'git', 'quiet']);
+select t.as_service();
+
 -- ── Draft outcomes ───────────────────────────────────────────────────────
 
 select t.as_service();
