@@ -15,6 +15,8 @@ jobs:
           version: latest
 
       - name: Deploy Edge Functions
-        run: supabase functions deploy --no-verify-jwt --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
+        # --yes: newer CLI versions ask for confirmation before deploying all functions,
+        # and a CI run cannot answer, so every deploy since 2026-11-16 stopped there.
+        run: supabase functions deploy --yes --no-verify-jwt --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
