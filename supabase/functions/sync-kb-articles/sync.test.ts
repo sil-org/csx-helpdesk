@@ -248,3 +248,57 @@ test('a run that is out of time stops cleanly and the next run finishes', async 
   assert.equal(next.partial, false)
   assert.equal(d.tables.kb_articles.length, 4)
 })
+
+test('an empty or invisible folder is an error, and nothing is removed', async () => {
+  const drive = kb(), d = fakeDb()
+  await run(drive, d)
+  assert.equal(d.tables.kb_articles.length, 4)
+  // Drive answers "no items, no error" both for an empty folder and one the service account cannot see.
+  drive.tree.root = []
+  const report = await run(drive, d)
+  assert.equal(report.errors.length, 1)
+  assert.match(report.errors[0].error, /empty or not visible.*sa@example\.org.*Nothing was changed/s)
+  assert.equal(report.removed, 0)
+  assert.equal(report.docs_found, 0)
+  assert.equal(d.tables.kb_articles.length, 4)
+})
+
+test('a first run on an empty folder reports the problem instead of a quiet success', async () => {
+  const drive = fakeDrive({ root: [] }, {}), d = fakeDb()
+  const report = await run(drive as unknown as ReturnType<typeof kb>, d)
+  assert.equal(report.errors.length, 1)
+  assert.match(report.errors[0].error, /sa@example\.org/)
+})
+
+test('if every Doc disappears at once nothing is removed unless forced', async () => {
+  const drive = kb(), d = fakeDb()
+  await run(drive, d)
+  // The folders are still listed, but no Docs are found any more.
+  drive.tree['f-public'] = []; drive.tree['f-internal'] = [node('f-topic', 'Sign-in and security', FOLDER)]
+  drive.tree['f-topic'] = []; drive.tree['f-agents'] = []
+  drive.tree.root = [node('f-public', 'public', FOLDER), node('f-internal', 'Internal', FOLDER), node('f-agents', 'agents', FOLDER)]
+  const report = await run(drive, d)
+  assert.equal(report.errors.length, 1)
+  assert.match(report.errors[0].error, /No Google Docs were found, but 4 articles are published\. Nothing was removed/)
+  assert.equal(d.tables.kb_articles.length, 4)
+  const forced = await run(drive, d, { force: true })
+  assert.deepEqual(forced.errors, [])
+  assert.equal(forced.removed, 4)
+  assert.equal(d.tables.kb_articles.length, 0)
+})
+
+test('the report counts the Docs found and names the files it ignored', async () => {
+  const drive = kb(), d = fakeDb()
+  drive.tree['f-internal'].push(
+    node('s1', '[EN] Guidance: Using AI at Work', 'application/vnd.google-apps.shortcut'),
+    node('w1', 'Old policy.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    node('p1', 'Brochure.pdf', 'application/pdf'),
+  )
+  const report = await run(drive, d)
+  assert.equal(report.docs_found, 5) // all Docs seen, including the loose one that is skipped
+  assert.deepEqual(report.ignored, [
+    { name: 'Internal / [EN] Guidance: Using AI at Work', type: 'shortcut' },
+    { name: 'Internal / Old policy.docx', type: 'Word file' },
+    { name: 'Internal / Brochure.pdf', type: 'PDF' },
+  ])
+})

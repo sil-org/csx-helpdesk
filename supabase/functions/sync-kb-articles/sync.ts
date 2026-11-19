@@ -35,8 +35,29 @@ export interface DeskReport {
   unchanged: number
   removed: number
   skipped: { name: string; reason: string }[]
+  // How many Google Docs the walk found, and the files it ignored because they
+  // are not Google Docs (uploaded Word files, PDFs, shortcuts, ...). Without
+  // these a folder the service account cannot see looks like a quiet success.
+  docs_found: number
+  ignored: { name: string; type: string }[]
   errors: { doc?: string; error: string }[]
   partial: boolean
+}
+
+interface WalkStats {
+  rootItems: number
+  ignored: { name: string; type: string }[]
+}
+
+const MAX_IGNORED_REPORTED = 25
+
+function friendlyType(mime: string): string {
+  if (mime === 'application/vnd.google-apps.shortcut') return 'shortcut'
+  if (mime === 'application/vnd.google-apps.spreadsheet') return 'Google Sheet'
+  if (mime === 'application/vnd.google-apps.presentation') return 'Google Slides'
+  if (mime === 'application/pdf') return 'PDF'
+  if (mime.includes('wordprocessingml') || mime === 'application/msword') return 'Word file'
+  return mime
 }
 
 export async function syncDesk(
@@ -49,20 +70,44 @@ export async function syncDesk(
   started: number,
 ): Promise<DeskReport> {
   const { db } = deps
-  const report: DeskReport = { desk_id: deskId, synced: [], unchanged: 0, removed: 0, skipped: [], errors: [], partial: false }
+  const report: DeskReport = {
+    desk_id: deskId, synced: [], unchanged: 0, removed: 0, skipped: [], docs_found: 0, ignored: [], errors: [], partial: false,
+  }
 
   let found: FoundDoc[]
+  const stats: WalkStats = { rootItems: 0, ignored: [] }
   try {
-    found = await walk(deps, token, folderId, [], 0, new Set())
+    found = await walk(deps, token, folderId, [], 0, new Set(), stats)
   } catch (err) {
     report.errors.push({ error: `${err.message}. Confirm the folder is shared (view access is enough) with ${serviceAccountEmail}.` })
     return report // never remove anything after an incomplete walk
+  }
+  report.docs_found = found.length
+  report.ignored = stats.ignored.slice(0, MAX_IGNORED_REPORTED)
+
+  // Drive answers "nothing here" with no error both for an empty folder and for
+  // a folder the service account cannot see. Either way this is not a walk to
+  // act on: without this check, losing access would unpublish every article.
+  if (stats.rootItems === 0) {
+    report.errors.push({
+      error: `The folder is empty or not visible to the service account. Share it (view access is enough, and for a Shared Drive the folder itself or the drive) with ${serviceAccountEmail}. Nothing was changed.`,
+    })
+    return report
   }
 
   const { data: existing, error: eErr } = await db.from('kb_articles')
     .select('id, drive_id, slug, tier, topic, archived, drive_modified_at').eq('desk_id', deskId)
   if (eErr) {
     report.errors.push({ error: eErr.message })
+    return report
+  }
+
+  // Every Doc vanishing at once is far more likely a sharing change than an
+  // editor deleting the whole KB, so it is left for a person to look at.
+  if (found.length === 0 && (existing ?? []).length > 0 && !force) {
+    report.errors.push({
+      error: `No Google Docs were found, but ${(existing ?? []).length} articles are published. Nothing was removed. If you really emptied the folder, run the sync again with {"force": true}.`,
+    })
     return report
   }
 
@@ -161,16 +206,22 @@ async function removeImages(db: Db, articleId: string, keep: Set<string> | null)
 
 // Every Google Doc under the folder, with the folder names above it. Throws if
 // any folder cannot be listed, so the caller knows the result is incomplete.
-async function walk(deps: Deps, token: string, folderId: string, segments: string[], depth: number, seen: Set<string>): Promise<FoundDoc[]> {
+async function walk(
+  deps: Deps, token: string, folderId: string, segments: string[], depth: number, seen: Set<string>, stats: WalkStats,
+): Promise<FoundDoc[]> {
   if (depth > MAX_DEPTH || seen.has(folderId)) return []
   seen.add(folderId)
   const docs: FoundDoc[] = []
-  for (const item of await listChildren(deps, token, folderId)) {
+  const items = await listChildren(deps, token, folderId)
+  if (depth === 0) stats.rootItems = items.length
+  for (const item of items) {
     if (item.mimeType === FOLDER_MIME) {
       if (isExcludedFolder(item.name)) continue
-      docs.push(...await walk(deps, token, item.id, [...segments, item.name], depth + 1, seen))
+      docs.push(...await walk(deps, token, item.id, [...segments, item.name], depth + 1, seen, stats))
     } else if (item.mimeType === DOC_MIME) {
       docs.push({ id: item.id, name: item.name, modifiedTime: item.modifiedTime, segments })
+    } else {
+      stats.ignored.push({ name: [...segments, item.name].join(' / '), type: friendlyType(item.mimeType) })
     }
   }
   return docs
