@@ -78,9 +78,16 @@ Deno.serve(async (req) => {
       await loadAddressMap(db)
     )
     if (outcome.status === 'ingested') {
-      triggerDraft(outcome.ticket_id)
-      if (outcome.created) background(notifyNewTicket(db, outcome.ticket_id))
-      else triggerAssigneeNotice(outcome.ticket_id, outcome.message_id)
+      if (outcome.created) {
+        // Wait for the draft before emailing agents, so the alert can
+        // include it — still entirely in the background (background(),
+        // below), so this can't affect ticket-ingestion reliability or the
+        // response to Resend any more than the two already didn't.
+        background(draftThenNotify(db, outcome.ticket_id, outcome.message_id))
+      } else {
+        background(triggerDraft(outcome.ticket_id))
+        triggerAssigneeNotice(outcome.ticket_id, outcome.message_id)
+      }
     }
     return json(outcome)
   } catch (err) {
@@ -89,22 +96,30 @@ Deno.serve(async (req) => {
   }
 })
 
-// Fire-and-forget: a new ticket, or a new non-internal requester reply,
-// kicks off generate-draft in the background without awaiting it, so a slow
-// or down Claude API can never affect this webhook's response to Resend
-// (which retries the whole thing on timeout) or ingestion reliability.
-// A failed draft call just means no draft — a soft failure, not a broken ticket.
-function triggerDraft(ticketId: string) {
-  const call = fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-draft`, {
+// Kicks off generate-draft. A failed or slow call here must never affect
+// ticket-ingestion reliability or this webhook's response to Resend (which
+// retries the whole thing on timeout) — a failed draft call just means no
+// draft, a soft failure, not a broken ticket. Callers run this in the
+// background (via background(), below) rather than awaiting it before
+// responding; draftThenNotify awaits it only to sequence the notify email
+// after it, not to gate the response.
+function triggerDraft(ticketId: string): Promise<void> {
+  return fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-draft`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ ticket_id: ticketId }),
-  }).catch((err) => console.error('generate-draft trigger failed:', err.message))
+  }).then(() => {}).catch((err) => console.error('generate-draft trigger failed:', err.message))
+}
 
-  background(call)
+// New ticket only: generate the draft first so the new-ticket alert can
+// include it, then send that alert. Both steps are soft failures — an error
+// in either is logged (inside each function) and never thrown here.
+async function draftThenNotify(db: Db, ticketId: string, messageId: string) {
+  await triggerDraft(ticketId)
+  await notifyNewTicket(db, ticketId, messageId)
 }
 
 // A requester reply on an existing ticket emails its assigned agent (a no-op
@@ -131,9 +146,11 @@ function background(p: Promise<unknown>) {
 
 // Emails every agent and admin on the ticket's desk when a brand-new ticket
 // is created, plus any extra addresses in HELPDESK_NEW_TICKET_NOTIFY
-// (comma-separated, optional). Never throws: a failed alert must not affect
+// (comma-separated, optional). Includes the message that opened the ticket
+// and (by the time this runs — see draftThenNotify) the AI's suggested
+// reply, if one was generated. Never throws: a failed alert must not affect
 // ingestion or make Resend retry.
-async function notifyNewTicket(db: Db, ticketId: string) {
+async function notifyNewTicket(db: Db, ticketId: string, messageId: string) {
   try {
     const sendKey = Deno.env.get('HELPDESK_RESEND_SENDING_API_KEY')
     const appUrl = Deno.env.get('HELPDESK_APP_URL')
@@ -164,12 +181,22 @@ async function notifyNewTicket(db: Db, ticketId: string) {
     const to = [...new Set(emails.map((e) => e.toLowerCase()))]
     if (!to.length) return
 
+    const [{ data: msg, error: msgErr }, { data: draft, error: draftErr }] = await Promise.all([
+      db.from('ticket_messages').select('body').eq('id', messageId).maybeSingle(),
+      db.from('ticket_drafts').select('body').eq('ticket_id', ticketId).is('superseded_at', null)
+        .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    ])
+    if (msgErr) throw msgErr
+    if (draftErr) throw draftErr
+
     const { subject, text } = buildNewTicketEmail({
       ticketNumber: t.ticket_number,
       subject: t.subject,
       senderEmail: t.sender_email,
       deskName: desk.name,
       link: `${appUrl.replace(/\/$/, '')}/d/${desk.slug}/t/${t.ticket_number}`,
+      messageBody: msg?.body ?? '(no message body)',
+      draftBody: draft?.body ?? null,
     })
     // One message per recipient so agents don't see each other's addresses
     // and one bad address can't block the rest.
