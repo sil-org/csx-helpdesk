@@ -3,7 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { signInWithGoogle } from '../../lib/auth'
-import HelpHeader from '../../components/HelpHeader'
+import AppLayout from '../../components/AppLayout'
+import { getReporterLinks } from '../../navLinks'
 import ChatLauncher, { CHAT_URL } from '../../components/ChatLauncher'
 import {
   DEFAULT_COLOR, formatDate, isStale, listArticles, listRecent, loadKbDesks, loadTopics,
@@ -108,9 +109,7 @@ export default function HelpCenter() {
   const ready = desks !== null && !authLoading
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <HelpHeader title={single?.name ?? 'Help center'} logoUrl={single?.logo_url} color={color} />
-
+    <AppLayout desk={single} links={getReporterLinks({ signedIn })}>
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-[760px] mx-auto px-6 pt-10 pb-8 flex flex-col gap-4">
           <h1 className="font-display text-[34px] leading-tight m-0">
@@ -201,7 +200,7 @@ export default function HelpCenter() {
       </main>
 
       <ChatLauncher color={color} />
-    </div>
+    </AppLayout>
   )
 }
 

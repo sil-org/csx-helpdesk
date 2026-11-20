@@ -1,18 +1,23 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
-import { Menu, X, LogOut, ChevronDown } from 'lucide-react'
+import { Menu, X, LogOut, LogIn, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useHelpdesk } from '../context/HelpdeskContext'
-import { signOut } from '../lib/auth'
+import { signInWithGoogle, signOut } from '../lib/auth'
 import { version as APP_VERSION } from '../../package.json'
+
+const COLLAPSE_KEY = 'sidebarCollapsed'
 
 // Left sidebar shell, matching the shared SIL app template (see
 // license-manager's src/components/AppLayout.jsx). `links` is:
 //   [{ to, label, icon: LucideIcon }]
-// `desk` is the page's current desk (Queue/Ticket have one; Admin doesn't
-// always) — when the signed-in profile works more than one desk (or is a
-// super admin), a desk switcher renders under the logo, replacing the desk
-// badge/dropdown that used to live in DeskHeader's top bar.
+// `desk` is the page's current desk — agent pages (Queue/Ticket/Admin) pass
+// their working desk, reporter pages (My Tickets, a ticket, an article) pass
+// whichever desk that content belongs to. When the signed-in profile works
+// more than one desk (or is a super admin), the badge becomes a switcher;
+// otherwise it's a plain static row. This is the one shell for every page in
+// the app — agent or reporter, signed in or signed out — so nobody ever
+// lands somewhere with no way back to Tickets, Help center or Admin.
 export default function AppLayout({ desk, links, children }) {
   const { profile } = useAuth()
   const { agentDesks, isSuperAdmin } = useHelpdesk()
@@ -20,11 +25,19 @@ export default function AppLayout({ desk, links, children }) {
   const { pathname } = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [deskMenuOpen, setDeskMenuOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === 'true')
 
   const switchable = isSuperAdmin || agentDesks.length > 1
 
   function isActive(to) {
     return pathname === to || pathname.startsWith(to + '/')
+  }
+
+  function toggleCollapsed() {
+    setCollapsed((c) => {
+      localStorage.setItem(COLLAPSE_KEY, String(!c))
+      return !c
+    })
   }
 
   return (
@@ -42,37 +55,44 @@ export default function AppLayout({ desk, links, children }) {
       )}
 
       <nav
-        className={`w-56 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col
-          fixed md:sticky top-0 h-screen z-30 transition-transform duration-200
-          ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}
+        className={`flex-shrink-0 bg-white border-r border-gray-200 flex flex-col
+          fixed md:sticky top-0 h-screen z-30 transition-[transform,width] duration-200
+          ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
+          w-56 ${collapsed ? 'md:w-14' : 'md:w-56'}`}
       >
-        <div className="px-4 py-4 flex items-center gap-2 border-b border-gray-100">
-          <img src="/sil-logo.png" alt="" className="h-6" />
-          <span className="font-sans font-bold text-brand text-sm leading-tight">Help Desk</span>
+        <div className={`px-4 py-4 flex items-center gap-2 border-b border-gray-100 ${collapsed ? 'md:justify-center md:px-0' : ''}`}>
+          <img src="/sil-logo.png" alt="" className="h-6 flex-shrink-0" />
+          <span className={`font-sans font-bold text-brand text-sm leading-tight ${collapsed ? 'md:hidden' : ''}`}>Help Desk</span>
         </div>
 
-        {switchable && (
+        {desk && (
           <div className="relative border-b border-gray-100">
-            <button
-              onClick={() => setDeskMenuOpen((o) => !o)}
-              className="w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-gray-50"
-              aria-haspopup="true"
-              aria-expanded={deskMenuOpen}
-            >
-              <span
-                className="w-5 h-5 flex-shrink-0 rounded text-white flex items-center justify-center font-bold text-[11px]"
-                style={{ background: desk?.theme_primary || '#005CB9' }}
+            {switchable ? (
+              <button
+                onClick={() => setDeskMenuOpen((o) => !o)}
+                className={`w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-gray-50 ${collapsed ? 'md:justify-center md:px-0' : ''}`}
+                aria-haspopup="true"
+                aria-expanded={deskMenuOpen}
+                title={collapsed ? desk?.name : undefined}
               >
-                {(desk?.name || '?')[0]}
-              </span>
-              <span className="flex-1 min-w-0 text-xs font-semibold text-gray-700 truncate">{desk?.name || 'Switch desk'}</span>
-              <ChevronDown size={14} className={`flex-shrink-0 text-gray-400 transition-transform ${deskMenuOpen ? 'rotate-180' : ''}`} />
-            </button>
+                <DeskBadge desk={desk} />
+                <span className={`flex-1 min-w-0 text-xs font-semibold text-gray-700 truncate ${collapsed ? 'md:hidden' : ''}`}>{desk?.name || 'Switch desk'}</span>
+                <ChevronDown size={14} className={`flex-shrink-0 text-gray-400 transition-transform ${deskMenuOpen ? 'rotate-180' : ''} ${collapsed ? 'md:hidden' : ''}`} />
+              </button>
+            ) : (
+              <div
+                className={`w-full px-4 py-2.5 flex items-center gap-2 ${collapsed ? 'md:justify-center md:px-0' : ''}`}
+                title={collapsed ? desk?.name : undefined}
+              >
+                <DeskBadge desk={desk} />
+                <span className={`flex-1 min-w-0 text-xs font-semibold text-gray-700 truncate ${collapsed ? 'md:hidden' : ''}`}>{desk?.name}</span>
+              </div>
+            )}
 
-            {deskMenuOpen && (
+            {switchable && deskMenuOpen && (
               <>
                 <div className="fixed inset-0 z-30" onClick={() => setDeskMenuOpen(false)} />
-                <div className="absolute left-2 right-2 mt-0.5 z-40 bg-white border border-gray-200 rounded-lg shadow-md overflow-hidden">
+                <div className="absolute left-2 w-56 mt-0.5 z-40 bg-white border border-gray-200 rounded-lg shadow-md overflow-hidden">
                   {agentDesks.map((d) => (
                     <button
                       key={d.id}
@@ -102,24 +122,49 @@ export default function AppLayout({ desk, links, children }) {
                 key={link.to}
                 to={link.to}
                 onClick={() => setMobileOpen(false)}
+                title={link.label}
                 className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm border-l-[3px] transition-colors text-left
+                  ${collapsed ? 'md:justify-center md:px-0' : ''}
                   ${active
                     ? 'border-brand text-brand bg-brand/[0.08] font-semibold'
                     : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}
               >
                 {Icon && <Icon size={16} className="flex-shrink-0" />}
-                <span className="truncate">{link.label}</span>
+                <span className={`truncate ${collapsed ? 'md:hidden' : ''}`}>{link.label}</span>
               </Link>
             )
           })}
         </div>
 
-        <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-500">
-          <p className="truncate mb-1.5">{profile?.primary_email}</p>
-          <button onClick={signOut} className="flex items-center gap-1.5 text-brand hover:underline">
-            <LogOut size={13} /> Sign out
-          </button>
-          <p className="text-gray-400 mt-1.5">v{APP_VERSION}</p>
+        <button
+          onClick={toggleCollapsed}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="hidden md:flex items-center gap-2 px-4 py-2.5 text-xs text-gray-500 hover:bg-gray-50 border-t border-gray-100"
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          {!collapsed && <span>Collapse</span>}
+        </button>
+
+        <div className={`px-4 py-3 border-t border-gray-100 text-xs text-gray-500 ${collapsed ? 'md:px-2' : ''}`}>
+          {profile ? (
+            <>
+              <p className={`truncate mb-1.5 ${collapsed ? 'md:hidden' : ''}`}>{profile.primary_email}</p>
+              <button onClick={signOut} title="Sign out" className={`flex items-center gap-1.5 text-brand hover:underline ${collapsed ? 'md:justify-center md:w-full' : ''}`}>
+                <LogOut size={13} className="flex-shrink-0" /> <span className={collapsed ? 'md:hidden' : ''}>Sign out</span>
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={signInWithGoogle}
+              title="Sign in with Google"
+              className={`w-full flex items-center justify-center gap-2 text-xs font-bold text-white rounded-lg py-2 ${collapsed ? 'md:px-0' : 'px-3'}`}
+              style={{ background: '#005CB9' }}
+            >
+              <LogIn size={14} className="flex-shrink-0" />
+              <span className={collapsed ? 'md:hidden' : ''}>Sign in with Google</span>
+            </button>
+          )}
+          <p className={`text-gray-400 mt-1.5 ${collapsed ? 'md:hidden' : ''}`}>v{APP_VERSION}</p>
         </div>
       </nav>
 
@@ -128,5 +173,16 @@ export default function AppLayout({ desk, links, children }) {
           doesn't render at all. */}
       <main className="flex-1 min-w-0 pt-14 md:pt-0">{children}</main>
     </div>
+  )
+}
+
+function DeskBadge({ desk }) {
+  return (
+    <span
+      className="w-5 h-5 flex-shrink-0 rounded text-white flex items-center justify-center font-bold text-[11px]"
+      style={{ background: desk?.theme_primary || '#005CB9' }}
+    >
+      {(desk?.name || '?')[0]}
+    </span>
   )
 }

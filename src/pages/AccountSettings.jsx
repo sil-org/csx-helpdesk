@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { useHelpdesk } from '../context/HelpdeskContext'
 import { createLinkToken, getLinkedAccounts, signOut } from '../lib/auth'
+import AppLayout from '../components/AppLayout'
+import { getLinks, getReporterLinks } from '../navLinks'
 
 // Lets a staff member link a second Google account (e.g. a personal Gmail)
 // to their profile, so they can still sign in if they ever lose access to
@@ -9,9 +12,18 @@ import { createLinkToken, getLinkedAccounts, signOut } from '../lib/auth'
 // of the second account's domain.
 export default function AccountSettings() {
   const { profile } = useAuth()
+  const { agentDesks, isSuperAdmin } = useHelpdesk()
   const [linkedAccounts, setLinkedAccounts] = useState(null)
   const [linkCodeActive, setLinkCodeActive] = useState(false)
   const [error, setError] = useState(null)
+
+  // Not a desk-specific page, so (like Admin) pass the agent's first desk
+  // just so "Tickets" still goes somewhere sensible — whichever nav fits
+  // this profile, so an agent or a reporter both keep a way back from here.
+  const isAgent = isSuperAdmin || agentDesks.length > 0
+  const links = isAgent
+    ? getLinks({ desk: agentDesks[0], isDeskAdmin: isSuperAdmin || agentDesks.some((d) => d.role === 'admin'), isSuperAdmin })
+    : getReporterLinks({ signedIn: true })
 
   useEffect(() => {
     if (!profile) return
@@ -30,65 +42,67 @@ export default function AccountSettings() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg p-10">
-        <h1 className="font-display text-2xl font-bold text-brand mb-2">Account</h1>
-        <p className="text-gray-500 mb-8">{profile?.display_name} — {profile?.primary_email}</p>
+    <AppLayout desk={isAgent ? agentDesks[0] : undefined} links={links}>
+      <div className="p-8">
+        <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg p-10">
+          <h1 className="font-display text-2xl font-bold text-brand mb-2">Account</h1>
+          <p className="text-gray-500 mb-8">{profile?.display_name} — {profile?.primary_email}</p>
 
-        <section className="mb-8">
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Linked sign-in accounts</h2>
-          {linkedAccounts === null ? (
-            <p className="text-sm text-gray-400">Loading…</p>
-          ) : (
-            <ul className="space-y-1">
-              {linkedAccounts.map((a) => (
-                <li key={a.supabase_user_id} className="text-sm text-gray-700">
-                  {a.email}{' '}
-                  <span className="text-gray-400">
-                    — linked {new Date(a.linked_at).toLocaleDateString()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold text-gray-700 mb-3">Linked sign-in accounts</h2>
+            {linkedAccounts === null ? (
+              <p className="text-sm text-gray-400">Loading…</p>
+            ) : (
+              <ul className="space-y-1">
+                {linkedAccounts.map((a) => (
+                  <li key={a.supabase_user_id} className="text-sm text-gray-700">
+                    {a.email}{' '}
+                    <span className="text-gray-400">
+                      — linked {new Date(a.linked_at).toLocaleDateString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-        <section>
-          <h2 className="text-sm font-semibold text-gray-700 mb-2">Add a backup sign-in account</h2>
-          <p className="text-sm text-gray-500 mb-4">
-            Link a personal Google account so you can still sign in if you ever lose access to your
-            SIL email — for example if you leave SIL or your account is disabled. Do this now, while
-            you still have access. It can't be set up after the fact.
-          </p>
+          <section>
+            <h2 className="text-sm font-semibold text-gray-700 mb-2">Add a backup sign-in account</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              Link a personal Google account so you can still sign in if you ever lose access to your
+              SIL email — for example if you leave SIL or your account is disabled. Do this now, while
+              you still have access. It can't be set up after the fact.
+            </p>
 
-          {!linkCodeActive ? (
-            <button
-              onClick={handleGenerateLink}
-              className="px-4 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700"
-            >
-              Generate a link code
-            </button>
-          ) : (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
-              <p className="mb-3 font-medium">Now sign out and sign back in with the account you want to link.</p>
-              <ol className="list-decimal list-inside space-y-1 mb-4">
-                <li>Stay on this device and browser — the link code lives here, not on your account</li>
-                <li>Sign out below</li>
-                <li>Sign in with the personal Google account, from the Home screen</li>
-                <li>It links automatically — the code expires in 15 minutes</li>
-              </ol>
+            {!linkCodeActive ? (
               <button
-                onClick={signOut}
-                className="px-4 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700"
+                onClick={handleGenerateLink}
+                className="px-4 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700"
               >
-                Sign out now
+                Generate a link code
               </button>
-            </div>
-          )}
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
+                <p className="mb-3 font-medium">Now sign out and sign back in with the account you want to link.</p>
+                <ol className="list-decimal list-inside space-y-1 mb-4">
+                  <li>Stay on this device and browser — the link code lives here, not on your account</li>
+                  <li>Sign out below</li>
+                  <li>Sign in with the personal Google account, from the Home screen</li>
+                  <li>It links automatically — the code expires in 15 minutes</li>
+                </ol>
+                <button
+                  onClick={signOut}
+                  className="px-4 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700"
+                >
+                  Sign out now
+                </button>
+              </div>
+            )}
 
-          {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
-        </section>
+            {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
+          </section>
+        </div>
       </div>
-    </div>
+    </AppLayout>
   )
 }

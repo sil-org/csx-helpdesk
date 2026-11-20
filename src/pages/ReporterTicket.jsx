@@ -3,6 +3,10 @@ import { Link, useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { hd, relativeTime, REPORTER_STATUS_LABEL } from '../lib/helpdesk'
 import StatusPill from '../components/StatusPill'
+import AppLayout from '../components/AppLayout'
+import { getReporterLinks } from '../navLinks'
+
+const REPORTER_LINKS = getReporterLinks({ signedIn: true })
 
 // One-line explanation shown under the status pill. Paused is "On hold" with
 // no date (spec section 4).
@@ -73,8 +77,20 @@ export default function ReporterTicket() {
     setSending(false)
   }
 
-  if (ticket === undefined) return <div className="min-h-screen flex items-center justify-center text-gray-400">Loading&hellip;</div>
-  if (ticket === null) return <div className="min-h-screen flex items-center justify-center text-gray-500 text-sm">Ticket not found.</div>
+  if (ticket === undefined) {
+    return (
+      <AppLayout links={REPORTER_LINKS}>
+        <div className="min-h-screen flex items-center justify-center text-gray-400">Loading&hellip;</div>
+      </AppLayout>
+    )
+  }
+  if (ticket === null) {
+    return (
+      <AppLayout links={REPORTER_LINKS}>
+        <div className="min-h-screen flex items-center justify-center text-gray-500 text-sm">Ticket not found.</div>
+      </AppLayout>
+    )
+  }
 
   // Default SIL Blue unless this desk overrides it (spec section 10: the
   // SIL theme is the default, per-desk colors are the exception).
@@ -82,17 +98,8 @@ export default function ReporterTicket() {
   const deskName = ticket.current_desk?.name || 'Help desk'
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="flex items-center gap-3 px-6 py-3 bg-white border-b border-gray-200">
-        {ticket.current_desk?.logo_url ? (
-          <img src={ticket.current_desk.logo_url} alt={deskName} className="h-8 w-auto" />
-        ) : (
-          <span className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ background: color }}>
-            {deskName[0]}
-          </span>
-        )}
-        <Link to="/my-tickets" className="text-sm font-semibold" style={{ color }}>&larr; My tickets</Link>
-      </div>
+    <AppLayout desk={ticket.current_desk} links={REPORTER_LINKS}>
+      <Link to="/my-tickets" className="inline-block mt-4 ml-6 text-sm font-semibold" style={{ color }}>&larr; My tickets</Link>
 
       <div className="max-w-[760px] w-full mx-auto px-6 py-8 flex flex-col gap-5">
         <div className="flex flex-col gap-2">
@@ -155,6 +162,6 @@ export default function ReporterTicket() {
           </div>
         </form>
       </div>
-    </div>
+    </AppLayout>
   )
 }

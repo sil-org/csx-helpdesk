@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { signInWithGoogle } from '../../lib/auth'
-import HelpHeader from '../../components/HelpHeader'
+import AppLayout from '../../components/AppLayout'
+import { getReporterLinks } from '../../navLinks'
 import KbMarkdown from '../../components/KbMarkdown'
 import ChatLauncher from '../../components/ChatLauncher'
 import { HelpPanel } from './HelpCenter'
@@ -55,9 +56,7 @@ export default function Article() {
   const unpublished = article && (article.is_draft || article.archived)
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <HelpHeader title={desk?.name ?? 'Help center'} logoUrl={desk?.logo_url} color={color} />
-
+    <AppLayout desk={desk} links={getReporterLinks({ signedIn })}>
       <div className="max-w-[1180px] mx-auto px-6 pt-7 pb-24 flex flex-wrap gap-9 items-start">
         {siblings.length > 1 && (
           <nav className="flex-[0_1_230px] min-w-[200px] flex flex-col gap-1" aria-label={article.topic}>
@@ -124,7 +123,7 @@ export default function Article() {
       </div>
 
       <ChatLauncher color={color} />
-    </div>
+    </AppLayout>
   )
 }
 
