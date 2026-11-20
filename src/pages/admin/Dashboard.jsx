@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import AppLayout from '../../components/AppLayout'
 import { useAuth } from '../../context/AuthContext'
 import { useHelpdesk } from '../../context/HelpdeskContext'
@@ -10,6 +11,7 @@ import { hd, profilesByIds, findProfileByEmail } from '../../lib/helpdesk'
 export default function AdminDashboard() {
   const { profile } = useAuth()
   const { agentDesks, allDesks, isSuperAdmin, loading } = useHelpdesk()
+  const [params] = useSearchParams()
   const [selId, setSelId] = useState(null)
   const [people, setPeople] = useState([])
   const [peopleProfiles, setPeopleProfiles] = useState({})
@@ -27,7 +29,12 @@ export default function AdminDashboard() {
   const [kb, setKb] = useState(null) // { refreshedAt, sharing: [{id, name}], usedIds: Set }
 
   const desks = isSuperAdmin ? allDesks : agentDesks.filter((d) => d.role === 'admin')
-  const sel = desks.find((d) => d.id === selId) ?? desks[0] ?? null
+  // Arriving via the sidebar's "Admin" link from a desk's Queue/Ticket page
+  // carries that desk's slug (?desk=) so Admin opens on the same desk
+  // instead of always defaulting to the first one alphabetically.
+  const sel = desks.find((d) => d.id === selId)
+    ?? desks.find((d) => d.slug === params.get('desk'))
+    ?? desks[0] ?? null
 
   async function loadPeople(deskId) {
     const { data, error } = await hd.from('agent_desks').select('profile_id, role').eq('desk_id', deskId)
@@ -209,7 +216,7 @@ export default function AdminDashboard() {
   }
 
   return (
-    <AppLayout desk={sel ?? agentDesks[0]} links={getLinks({ desk: agentDesks[0], isDeskAdmin: true, isSuperAdmin })}>
+    <AppLayout desk={sel ?? agentDesks[0]} links={getLinks({ desk: sel ?? agentDesks[0], isDeskAdmin: true, isSuperAdmin })}>
       <div className="flex flex-wrap items-center gap-4 px-6 py-3 bg-white border-b border-gray-200">
         <div className="text-[17px] font-bold">Administration</div>
         <div className="flex-1" />

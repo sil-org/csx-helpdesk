@@ -30,7 +30,8 @@ export default function AppLayout({ desk, links, children }) {
   const switchable = isSuperAdmin || agentDesks.length > 1
 
   function isActive(to) {
-    return pathname === to || pathname.startsWith(to + '/')
+    const path = to.split('?')[0]
+    return pathname === path || pathname.startsWith(path + '/')
   }
 
   function toggleCollapsed() {
@@ -121,8 +122,10 @@ export default function AppLayout({ desk, links, children }) {
               <Link
                 key={link.to}
                 to={link.to}
+                target={link.newTab ? '_blank' : undefined}
+                rel={link.newTab ? 'noopener noreferrer' : undefined}
                 onClick={() => setMobileOpen(false)}
-                title={link.label}
+                title={link.newTab ? `${link.label} (opens in a new tab)` : link.label}
                 className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm border-l-[3px] transition-colors text-left
                   ${collapsed ? 'md:justify-center md:px-0' : ''}
                   ${active

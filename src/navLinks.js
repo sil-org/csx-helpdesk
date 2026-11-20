@@ -1,4 +1,4 @@
-import { Inbox, LifeBuoy, Settings } from 'lucide-react'
+import { ExternalLink, Inbox, LifeBuoy, Settings } from 'lucide-react'
 
 // Mirrors license-manager's navLinks.js convention (a function, not a static
 // array, since the Queue link depends on which desk is current). `desk` is
@@ -8,7 +8,10 @@ import { Inbox, LifeBuoy, Settings } from 'lucide-react'
 export function getLinks({ desk, isDeskAdmin, isSuperAdmin } = {}) {
   return [
     ...(desk ? [{ to: `/d/${desk.slug}`, label: 'Tickets', icon: Inbox }] : []),
-    ...(isDeskAdmin || isSuperAdmin ? [{ to: '/admin', label: 'Admin', icon: Settings }] : []),
+    { to: '/help', label: 'Customer portal', icon: ExternalLink, newTab: true },
+    // Carries the current desk's slug so Admin opens on it instead of
+    // defaulting to the first desk alphabetically.
+    ...(isDeskAdmin || isSuperAdmin ? [{ to: desk ? `/admin?desk=${desk.slug}` : '/admin', label: 'Admin', icon: Settings }] : []),
   ]
 }
 
