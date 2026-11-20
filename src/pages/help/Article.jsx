@@ -28,7 +28,7 @@ export default function Article() {
   useEffect(() => {
     if (authLoading) return
     let cancelled = false
-    setArticle(undefined); setImageUrls({}); setError(null)
+    setArticle(undefined); setImageUrls({}); setError(null); setSiblings([])
     ;(async () => {
       try {
         const desks = await loadKbDesks()
@@ -58,7 +58,7 @@ export default function Article() {
   return (
     <AppLayout desk={desk} links={getReporterLinks({ signedIn })}>
       <div className="max-w-[1180px] mx-auto px-6 pt-7 pb-24 flex flex-wrap gap-9 items-start">
-        {siblings.length > 1 && (
+        {article && siblings.length > 1 && (
           <nav className="flex-[0_1_230px] min-w-[200px] flex flex-col gap-1" aria-label={article.topic}>
             <div className="text-xs font-bold tracking-wider uppercase text-gray-500 px-3 pb-1.5">{article.topic}</div>
             {siblings.map((s) => (
