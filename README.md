@@ -4,7 +4,7 @@ Unified help desk & ticketing platform for SIL departments (Dallas, Africa, Glob
 
 Built on [`sil-app-template`](https://github.com/kode-monki/sil-app-template) — the shared identity model, RLS conventions, SIL branding, and S3/CloudFront deploy pipeline all come from there. App-specific tables and pages are additions on top.
 
-**Shares its Supabase project with [`license-manager`](https://github.com/kode-monki/license-manager)** rather than having its own — same `sil-app-template` auth kernel, same population of SIL staff, no table-name collisions between the two apps' domain schemas. One Google OAuth setup and one sign-in covers both. See `SETUP.md` step 1.
+**Shares its Supabase project with [`license-manager`](https://github.com/sil-org/csx-license-manager)** rather than having its own — same `sil-app-template` auth kernel, same population of SIL staff, no table-name collisions between the two apps' domain schemas. One Google OAuth setup and one sign-in covers both. See `SETUP.md` step 1.
 
 ## Stack
 
