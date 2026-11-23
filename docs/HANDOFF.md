@@ -37,5 +37,10 @@ For a fresh Claude Code session (or a person) picking this up. Read in this orde
 ## Open questions waiting on Kate
 
 Resend plan (received mail counts toward the team's quota; free plan is 100 emails a day) and the maximum received message size; data-policy sign-off; who reviews corpus
-proposals; SSO timing; pilot desk agents and success criteria; erasure-request
+proposals; pilot desk agents and success criteria; erasure-request
 handling; whether the GHD responder should point at the merged Doc.
+
+SSO timing: decided 2026-11-23 — SSO-only (Google OAuth removed), via the
+same in-house SAML IdP as `global-finance-payreq`. App code is done; the
+dashboard/IdP registration and per-user cutover are still open, see
+`SETUP.md` step 2 and `HELPDESK_SPEC.md` build order item 9.

@@ -9,7 +9,7 @@ UI mockups: https://claude.ai/artifact/SHBBmhf25HyUG8VCGn9RLv (private canvas; f
 | # | Decision |
 |---|---|
 | 1 | Help desk tables live in their own Postgres schema, `helpdesk`, inside the shared Supabase project. The only coupling to `license-manager` is the shared identity kernel (`profiles`, `linked_accounts`). |
-| 2 | Only SIL staff can sign in (Google now, SSO in about two weeks). Anyone can email a ticket in. |
+| 2 | Only SIL staff can sign in. Revised 2026-11-23: sign-in is now SSO via the in-house SAML IdP (not Google) — see Section 13 build order item 9. Anyone can email a ticket in. |
 | 3 | Seven statuses: New, Open, Waiting for response, Paused (with `paused_until`), Resolved, Closed, Deleted (soft delete). |
 | 4 | When a ticket is forwarded in, the real reporter gets an acknowledgement only when detection confidence is high. Agents can always change the reporter manually. |
 | 5 | Transfers go only to desks that opt in ("accepts transfers" per desk). |
@@ -214,7 +214,7 @@ Behaviour by confidence:
    c. Nightly job: classify differences and ratings, deduplicate, write proposals.
    d. Delivery as one batched Doc comment per desk; approve, reject and applied tracked in the app.
 8. **SLA, reports, nudge, auto-close, satisfaction rating.**
-9. **SSO swap; per-desk alias cutover and YouTrack retirement.**
+9. **SSO swap; per-desk alias cutover and YouTrack retirement.** *(SSO swap: app code built — `signInWithSSO()`, `helpdesk.resolve_profile_sso()` (`schema_helpdesk.sql`, `migration_sso_auth.sql` for existing projects). Not yet deployed: registering the in-house SAML IdP with Supabase, enabling the SSO add-on, and the per-user Google-identity cutover — see SETUP.md step 2.)*
 
 ## 14. Risks and open items
 

@@ -10,8 +10,11 @@ Replace `YOUR_DOMAIN` below with the subdomain you'll host this at (e.g. `helpde
 
 This app shares a Supabase project with `license-manager` rather than having
 its own — both are `sil-app-template` apps for the same population of SIL
-staff, so one project means one Google OAuth setup and one sign-in (via the
-shared `profiles`/`linked_accounts` tables) instead of two. Their domain
+staff, so one project means one sign-in setup (via the shared
+`profiles`/`linked_accounts` tables) instead of two — note that helpdesk and
+license-manager can still use different sign-in methods on this one project
+(see step 2): helpdesk is SSO-only, license-manager may still be on Google.
+Their domain
 tables don't collide: this app's tables live in their own Postgres schema,
 `helpdesk`, and nothing in `public` is created, altered or dropped by it. That
 also means the help desk can be split out into its own project later with
@@ -23,16 +26,20 @@ is already provisioned):
 1. Get its **Project URL** and **anon public** key from
    **Project Settings > API** — reuse them for `VITE_SUPABASE_URL` /
    `VITE_SUPABASE_ANON_KEY` here, don't create a new project
-2. **Check whether `resolve_profile()` already enforces the sil.org domain
-   check** (open the function in SQL Editor, or check `license-manager`'s
-   `supabase/schema.sql`). If not, run the "enable domain check" snippet in
-   step 1a below — this app requires it, and since the function is shared,
-   it needs to be enabled once for both apps.
+2. **Check whether `resolve_profile()` is on the hardened, post-2026-09-25
+   version** (open the function in SQL Editor — it should derive identity
+   from `auth.uid()`, not from its `p_supabase_user_id`/`p_email`
+   parameters; see `license-manager`'s `supabase/schema.sql` for the
+   canonical copy and why — the pre-hardening version had a real
+   privilege-escalation hole). If it isn't, run `supabase/migration_sso_auth.sql`
+   once — this app's `resolve_profile_sso()` depends on the same fix
+   (`is_eligible_staff_email()`, identity from the session), and since
+   `resolve_profile()` itself is shared, bringing it up to date here also
+   fixes it for license-manager if their deploy hasn't picked it up yet.
 3. **SQL Editor > New query**, paste `supabase/schema_helpdesk.sql`, run it.
-   **Do not re-run `schema.sql`** — it's already been applied by
-   license-manager's setup, and re-running it will error on
-   `policy already exists` (the table/function statements are idempotent,
-   but the `create policy` statements aren't).
+   Re-running `supabase/schema.sql` itself is also safe now (policies are
+   dropped and recreated), but there's no need to if step 2 already applied
+   the same fix via `migration_sso_auth.sql`.
 4. Run `supabase/seed_pilot_desk.sql` (creates the pilot Global IT Help Desk
    with the address helpdesk@sil.org; needed for step 9)
 5. Do step 1b below (expose the schema, create the first super admin)
@@ -47,8 +54,8 @@ hasn't been set up either):
 4. **Project Settings > API** → copy **Project URL** (`VITE_SUPABASE_URL`) and
    **anon public** key (`VITE_SUPABASE_ANON_KEY`)
 5. **SQL Editor > New query**, paste `supabase/schema.sql` (the sil-app-template
-   auth kernel — profiles, linked accounts, RLS, with the sil.org check
-   already enabled in this copy), run it — **once, for both apps**
+   auth kernel — profiles, linked accounts, RLS, with the eligible-staff-email
+   check already enabled in this copy), run it — **once, for both apps**
 6. New query, paste `supabase/schema_helpdesk.sql`, run it
 7. Also run `license-manager`'s `supabase/schema_licenses.sql` against this
    same project (see that repo's `SETUP.md`)
@@ -82,63 +89,25 @@ the `helpdesk` schema. Those old tables are pilot test data and can be dropped
 once you've confirmed that; `supabase/cleanup_pilot_public_tables.sql` lists
 the statements, commented out.
 
-### 1a. Enable the sil.org domain check (only if it isn't already)
+### 1a. Bring `resolve_profile()` up to the hardened version (only if it isn't already)
 
-Safe to run any time — `create or replace function` doesn't error if the
-function already exists, so this works whether or not the check is
-currently enabled:
+There used to be a copy-pasteable SQL snippet here. Don't use an old copy of
+it (from git history, a chat log, etc.) — it had two problems, found
+2026-09-25 in a license-manager security review and fixed there first:
 
-```sql
-create or replace function resolve_profile(
-  p_token uuid,
-  p_supabase_user_id uuid,
-  p_email text,
-  p_display_name text
-)
-returns uuid language plpgsql security definer as $$
-declare
-  v_profile_id uuid;
-begin
-  -- case 1: already linked
-  select profile_id into v_profile_id
-  from linked_accounts where supabase_user_id = p_supabase_user_id;
-  if v_profile_id is not null then
-    return v_profile_id;
-  end if;
+- It trusted the caller-supplied `p_supabase_user_id`/`p_email` parameters
+  instead of deriving identity from the session, so any signed-in user could
+  link their own account to any existing profile (an admin's included) just
+  by naming its email and user id in the RPC call.
+- It hardcoded `@sil.org`, missing the handful of other SIL-affiliated
+  domains `is_eligible_staff_email()` now covers.
 
-  -- case 2: valid link token supplied — links this account to an existing
-  -- profile regardless of email domain. The token is the security check
-  -- here, not the domain — see schema.sql for why that's safe.
-  if p_token is not null then
-    select profile_id into v_profile_id
-    from profile_link_tokens
-    where token = p_token and used_at is null and expires_at > now();
-
-    if v_profile_id is not null then
-      insert into linked_accounts (supabase_user_id, profile_id, email)
-      values (p_supabase_user_id, v_profile_id, p_email);
-      update profile_link_tokens set used_at = now() where token = p_token;
-      return v_profile_id;
-    end if;
-  end if;
-
-  -- case 3: brand new person — the only path that creates a profile, so the
-  -- only path that needs the sil.org check.
-  if p_email not like '%@sil.org' then
-    raise exception 'Access restricted to SIL staff (sil.org accounts).';
-  end if;
-
-  insert into profiles (display_name, primary_email)
-  values (p_display_name, p_email)
-  returning id into v_profile_id;
-
-  insert into linked_accounts (supabase_user_id, profile_id, email)
-  values (p_supabase_user_id, v_profile_id, p_email);
-
-  return v_profile_id;
-end;
-$$;
-```
+Run `supabase/migration_sso_auth.sql` instead — it's safe to run any time
+(`create or replace` / drop-and-recreate throughout) and brings
+`resolve_profile()`, `is_eligible_staff_email()`, and the
+`profiles_block_self_escalation` trigger up to the same hardened state as
+`license-manager`'s `supabase/schema.sql`, in addition to adding this app's
+own `resolve_profile_sso()`.
 
 ---
 
@@ -165,34 +134,99 @@ $$;
 
 ---
 
-## 2. Set up Google OAuth, restricted to SIL staff
+## 2. Set up SAML SSO, restricted to SIL staff
 
-Unlike the generic template, this app enforces the sil.org domain check
-inside `resolve_profile()` in `schema.sql` (already enabled, not commented
-out) — so any non-`@sil.org` sign-in attempt is rejected at the database
-level. Still do this too, as a stronger first line of defense:
+This app signs in via the in-house SAML identity provider (the same one
+`global-finance-payreq` uses) instead of Google OAuth. The app code side of
+this (`src/lib/auth.js` calling `supabase.auth.signInWithSSO()`, and the
+helpdesk-only `helpdesk.resolve_profile_sso()` RPC) is already done — this
+section is the external setup needed to make it work.
 
-### Recommended — Internal consent screen (if this project lives in the sil.org Workspace org)
-1. [console.cloud.google.com](https://console.cloud.google.com) → new project `helpdesk`
-2. **APIs & Services > OAuth consent screen**
-   - User type: **Internal** — this makes Google itself reject any non-sil.org
-     sign-in before it ever reaches the app
-3. **APIs & Services > Credentials > Create Credentials > OAuth client ID**
-   - Application type: **Web application**
-   - Authorised JavaScript origins: `https://YOUR_DOMAIN`
-   - Authorised redirect URIs: `https://your-project-id.supabase.co/auth/v1/callback`
-4. Copy **Client ID** and **Client Secret**
+`helpdesk.resolve_profile_sso()` enforces `is_eligible_staff_email()` as the
+database-level backstop behind whatever the IdP itself restricts, and
+refuses to run for any session that isn't a real SSO sign-in
+(`auth.users.is_sso_user`), so a stale Google or password session from
+elsewhere on this shared project can never create or link a helpdesk
+profile.
 
-If Internal isn't available (project isn't in the sil.org Workspace org), use
-**External** — the database-level check in `resolve_profile()` is the real
-enforcement in that case.
+### 2a. A blocker that's now fixed in `migration_sso_auth.sql` — read this anyway
 
-### In Supabase
-1. **Authentication > Providers > Google** → enable, paste Client ID/Secret
-2. **Authentication > URL Configuration**:
-   - Site URL: `https://YOUR_DOMAIN`
-   - Redirect URLs: `https://YOUR_DOMAIN/auth/callback`, plus
-     `http://localhost:5173/auth/callback` for local dev
+`license-manager` already has its own `signInWithSSO()` wired up
+(`src/lib/auth.js`), pointed at the same shared project this app uses — but
+its sign-in button was deliberately **disabled** from 2026-09-21 to
+2026-11-23, with this comment:
+
+> Hidden for now (Kate, 2026-09-21) while the shared-project auth trigger
+> gap (`handle_new_auth_user()` bypassing `is_eligible_staff_email()`) is
+> unresolved — `signInWithSSO()` and its wiring are untouched, so
+> re-enabling is just flipping this back to true.
+
+**Found 2026-11-23, confirmed from the live function body:** that trigger
+(`on_auth_user_created` → `handle_new_auth_user()`, undocumented, not in
+either app's migrations) had no eligibility check *at all* — not an
+incomplete one — and because it fires on `auth.users` INSERT before either
+app's client code calls `resolve_profile()`/`resolve_profile_sso()`, it won
+the race every time: `linked_accounts` already had a row by the time those
+RPCs ran, so their eligibility checks never actually applied to a new
+sign-in. `migration_sso_auth.sql` part 1 drops it (Kate's call, as its
+owner, over fixing it in place) — `resolve_profile()`/`resolve_profile_sso()`
+already do the same matching correctly and are both already called right
+after sign-in on this project, so one source of truth replaces two. Make
+sure `migration_sso_auth.sql` has been run — on this project — before
+re-enabling SSO sign-in anywhere, including license-manager's button.
+
+### 2b. Supabase SSO add-on
+SAML SSO is a paid Team/Enterprise feature, not available on Supabase's free
+tier. Confirm it's enabled for this project (**Project Settings > Add-ons**).
+
+### 2c. Register the IdP — check for an existing registration first
+`license-manager`'s `.env.example` already has a `VITE_SSO_PROVIDER_ID`
+entry, and its code comment (as of when it was written) describes "the same
+shared Supabase project's SAML provider Finance already signs in through" —
+but `global-finance-payreq` is confirmed to be on its **own**, separate
+Supabase project now (not this one), so that comment is stale. Before
+registering anything:
+1. Check license-manager's actual **deployed** environment (Amplify, not
+   just its local `.env.example`) for an existing `VITE_SSO_PROVIDER_ID` —
+   if one's there, that's this project's own registration (from
+   license-manager's earlier, currently-disabled SSO work), not Finance's.
+   Reuse it rather than registering a duplicate.
+2. If none exists: **Authentication > Sign In / Up > SSO with SAML 2.0**
+   (dashboard), or via the CLI:
+   `npx supabase sso add --project-ref <ref> --metadata-file idp.xml`, using
+   metadata from whoever administers the in-house IdP (the same
+   organization-wide IdP `global-finance-payreq` and `license-manager` both
+   use, even though on different Supabase-side registrations).
+3. Copy the provider UUID into `VITE_SSO_PROVIDER_ID` (`.env`).
+4. **Authentication > URL Configuration** → add
+   `https://YOUR_DOMAIN/auth/callback` and
+   `http://localhost:5173/auth/callback` to Redirect URLs (same step as the
+   old Google setup used).
+
+### 2d. Database — add the SSO-only RPC
+If `schema_helpdesk.sql` hasn't been (re-)run since this RPC was added, run
+`supabase/migration_sso_auth.sql` once in the SQL Editor (safe to run
+again). Fresh setups following step 1 above already get it from
+`schema_helpdesk.sql` and `schema.sql`.
+
+### 2e. Cutover — existing staff who signed in with Google
+Supabase won't let a SAML identity coexist with an existing identity for the
+same email (confirmed in `global-finance-payreq`'s own pilot migration,
+`scripts/sso-migration/README.md`, on its prior shared project — same
+underlying Supabase behavior). For every staff member who already has a
+Google-linked account on this shared project:
+1. **Authentication > Users** → delete their Google identity.
+2. Delete the matching stale row in `public.linked_accounts`
+   (`supabase_user_id` = that deleted `auth.users.id`) — otherwise their
+   first SSO sign-in can fail with "Database error saving new user", because
+   of `handle_new_auth_user()` (see 2a) matching by email but excluding any
+   profile with an existing `linked_accounts` row, including a stale one.
+
+**Pilot this with 1-2 test accounts first**, not a full-staff cutover —
+confirm `profile_id` stays the same before and after for a piloted account
+before doing the rest. Rollback is simple while piloting: leave the Google
+provider enabled (`license-manager` needs it anyway) and signing in with
+Google again just re-creates the identity and reattaches by email.
 
 ---
 
@@ -239,6 +273,17 @@ Create an **A** record (Alias) for `YOUR_DOMAIN` pointing at the CloudFront dist
 ---
 
 ## 4. Add GitHub Secrets
+
+**This section describes the sil-app-template's generic S3/CloudFront
+deploy — this app's actual frontend currently runs on AWS Amplify instead**
+(see "New-ticket alerts" below, `HELPDESK_APP_URL`). `.github/workflows/deploy.yml`
+only deploys edge functions; there's no frontend-deploy GitHub Action in
+this repo. Any `VITE_*` env var (including `VITE_SSO_PROVIDER_ID`) needs to
+be set in the **Amplify Console's environment variables** for this to take
+effect in production, not as a GitHub secret — GitHub secrets only reach
+`SUPABASE_ACCESS_TOKEN`/`SUPABASE_PROJECT_REF` (used by the edge-functions
+job) today. If this app moves to the S3/CloudFront pipeline described
+below, the GitHub secrets table becomes accurate and this note can go.
 
 **Settings > Secrets and variables > Actions**:
 

@@ -1,20 +1,21 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useHelpdesk } from '../context/HelpdeskContext'
-import { createLinkToken, getLinkedAccounts, signOut } from '../lib/auth'
+import { getLinkedAccounts } from '../lib/auth'
 import AppLayout from '../components/AppLayout'
 import { getLinks, getReporterLinks } from '../navLinks'
 
-// Lets a staff member link a second Google account (e.g. a personal Gmail)
-// to their profile, so they can still sign in if they ever lose access to
-// their SIL email. Must be done proactively, while they still have access —
-// see supabase/schema.sql resolve_profile() for why linking works regardless
-// of the second account's domain.
+// Previously also let a staff member link a second Google account (e.g. a
+// personal Gmail) as backup sign-in access. That flow doesn't translate to
+// SSO-only sign-in — there's only one identity provider, so there's no
+// second account to sign back in with — so the "add a backup account" UI
+// below is disabled. The underlying link-token mechanism (createLinkToken,
+// resolve_profile_sso's case 2 in schema_helpdesk.sql) still exists and
+// still works; it just has no UI entry point right now.
 export default function AccountSettings() {
   const { profile } = useAuth()
   const { agentDesks, isSuperAdmin } = useHelpdesk()
   const [linkedAccounts, setLinkedAccounts] = useState(null)
-  const [linkCodeActive, setLinkCodeActive] = useState(false)
   const [error, setError] = useState(null)
 
   // Not a desk-specific page, so (like Admin) pass the agent's first desk
@@ -29,17 +30,6 @@ export default function AccountSettings() {
     if (!profile) return
     getLinkedAccounts(profile.id).then(setLinkedAccounts).catch((e) => setError(e.message))
   }, [profile])
-
-  async function handleGenerateLink() {
-    setError(null)
-    try {
-      const token = await createLinkToken()
-      localStorage.setItem('pendingLinkToken', token)
-      setLinkCodeActive(true)
-    } catch (e) {
-      setError(e.message)
-    }
-  }
 
   return (
     <AppLayout desk={isAgent ? agentDesks[0] : undefined} links={links}>
@@ -67,37 +57,11 @@ export default function AccountSettings() {
           </section>
 
           <section>
-            <h2 className="text-sm font-semibold text-gray-700 mb-2">Add a backup sign-in account</h2>
-            <p className="text-sm text-gray-500 mb-4">
-              Link a personal Google account so you can still sign in if you ever lose access to your
-              SIL email — for example if you leave SIL or your account is disabled. Do this now, while
-              you still have access. It can't be set up after the fact.
+            <h2 className="text-sm font-semibold text-gray-700 mb-2">Backup sign-in account</h2>
+            <p className="text-sm text-gray-500">
+              Not available with SSO sign-in — there's a single sign-in identity, so there's no second
+              account to link as backup.
             </p>
-
-            {!linkCodeActive ? (
-              <button
-                onClick={handleGenerateLink}
-                className="px-4 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700"
-              >
-                Generate a link code
-              </button>
-            ) : (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
-                <p className="mb-3 font-medium">Now sign out and sign back in with the account you want to link.</p>
-                <ol className="list-decimal list-inside space-y-1 mb-4">
-                  <li>Stay on this device and browser — the link code lives here, not on your account</li>
-                  <li>Sign out below</li>
-                  <li>Sign in with the personal Google account, from the Home screen</li>
-                  <li>It links automatically — the code expires in 15 minutes</li>
-                </ol>
-                <button
-                  onClick={signOut}
-                  className="px-4 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700"
-                >
-                  Sign out now
-                </button>
-              </div>
-            )}
 
             {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
           </section>

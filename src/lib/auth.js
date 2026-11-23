@@ -1,15 +1,11 @@
 import { supabase } from './supabase'
+import { hd } from './helpdesk'
 
-export async function signInWithGoogle() {
-  const { error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
+export async function signInWithSSO() {
+  const { error } = await supabase.auth.signInWithSSO({
+    providerId: import.meta.env.VITE_SSO_PROVIDER_ID,
     options: {
       redirectTo: `${window.location.origin}/auth/callback`,
-      // Without this, Google often silently reuses the browser's last Google
-      // session instead of showing the account chooser — which breaks the
-      // "sign out, sign in with the other account" step of linking a second
-      // account (see AccountSettings.jsx).
-      queryParams: { prompt: 'select_account' },
     },
   })
   if (error) throw error
@@ -20,13 +16,17 @@ export async function signOut() {
   if (error) throw error
 }
 
-// Called after OAuth callback — finds or creates a profile for this Google account.
-// If a pendingLinkToken is in localStorage, links this account to the existing profile first.
+// Called after the SSO callback — finds or creates a profile for this SAML
+// identity. If a pendingLinkToken is in localStorage, links this identity to
+// the existing profile first. Uses the helpdesk-specific resolve_profile_sso
+// RPC (schema_helpdesk.sql), not the shared public.resolve_profile() that
+// license-manager still uses for Google sign-in on this same Supabase
+// project — see that function's comment for why they're kept separate.
 export async function resolveProfile(authUser) {
   const pendingToken = localStorage.getItem('pendingLinkToken') || null
   if (pendingToken) localStorage.removeItem('pendingLinkToken')
 
-  const { data: profileId, error: rpcError } = await supabase.rpc('resolve_profile', {
+  const { data: profileId, error: rpcError } = await hd.rpc('resolve_profile_sso', {
     p_token: pendingToken,
     p_supabase_user_id: authUser.id,
     p_email: authUser.email,

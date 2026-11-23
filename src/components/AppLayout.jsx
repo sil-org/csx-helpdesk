@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Menu, X, LogOut, LogIn, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useHelpdesk } from '../context/HelpdeskContext'
-import { signInWithGoogle, signOut } from '../lib/auth'
+import { signInWithSSO, signOut } from '../lib/auth'
 import { version as APP_VERSION } from '../../package.json'
 
 const COLLAPSE_KEY = 'sidebarCollapsed'
@@ -158,13 +158,13 @@ export default function AppLayout({ desk, links, children }) {
             </>
           ) : (
             <button
-              onClick={signInWithGoogle}
-              title="Sign in with Google"
+              onClick={signInWithSSO}
+              title="Sign in with SSO"
               className={`w-full flex items-center justify-center gap-2 text-xs font-bold text-white rounded-lg py-2 ${collapsed ? 'md:px-0' : 'px-3'}`}
               style={{ background: '#005CB9' }}
             >
               <LogIn size={14} className="flex-shrink-0" />
-              <span className={collapsed ? 'md:hidden' : ''}>Sign in with Google</span>
+              <span className={collapsed ? 'md:hidden' : ''}>Sign in with SSO</span>
             </button>
           )}
           <p className={`text-gray-400 mt-1.5 ${collapsed ? 'md:hidden' : ''}`}>v{APP_VERSION}</p>

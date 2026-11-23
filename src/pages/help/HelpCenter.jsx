@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
-import { signInWithGoogle } from '../../lib/auth'
+import { signInWithSSO } from '../../lib/auth'
 import AppLayout from '../../components/AppLayout'
 import { getReporterLinks } from '../../navLinks'
 import ChatLauncher, { CHAT_URL } from '../../components/ChatLauncher'
@@ -253,10 +253,10 @@ function SignInCard({ count, color }) {
     <div className="bg-white border border-dashed border-gray-300 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
       <div>
         <div className="text-base font-bold">{count ? `${count} more ${count === 1 ? 'result' : 'results'} for signed-in staff` : 'More articles for signed-in staff'}</div>
-        <div className="text-sm text-gray-600 mt-0.5">Sign in with your SIL Google account to see them.</div>
+        <div className="text-sm text-gray-600 mt-0.5">Sign in with SSO to see them.</div>
       </div>
-      <button onClick={signInWithGoogle} className="text-[15px] font-bold text-white rounded-lg px-4 py-2.5" style={{ background: color }}>
-        Sign in with Google
+      <button onClick={signInWithSSO} className="text-[15px] font-bold text-white rounded-lg px-4 py-2.5" style={{ background: color }}>
+        Sign in with SSO
       </button>
     </div>
   )

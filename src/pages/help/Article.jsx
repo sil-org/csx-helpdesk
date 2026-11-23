@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
-import { signInWithGoogle } from '../../lib/auth'
+import { signInWithSSO } from '../../lib/auth'
 import AppLayout from '../../components/AppLayout'
 import { getReporterLinks } from '../../navLinks'
 import KbMarkdown from '../../components/KbMarkdown'
@@ -135,8 +135,8 @@ function NotFound({ signedIn, color }) {
       <div className="flex gap-3 flex-wrap">
         <Link to="/help" className="font-bold text-brand no-underline">Search the help center</Link>
         {!signedIn && (
-          <button onClick={signInWithGoogle} className="text-sm font-bold text-white rounded-lg px-4 py-2" style={{ background: color }}>
-            Sign in with Google
+          <button onClick={signInWithSSO} className="text-sm font-bold text-white rounded-lg px-4 py-2" style={{ background: color }}>
+            Sign in with SSO
           </button>
         )}
       </div>

@@ -454,6 +454,98 @@ $$;
 revoke all on function helpdesk.find_profile_by_email(text) from public;
 grant execute on function helpdesk.find_profile_by_email(text) to authenticated;
 
+-- ── RPC: resolve_profile_sso (SAML SSO sign-in only) ──────────────────────
+-- Helpdesk-specific sibling of public.resolve_profile() in schema.sql, which
+-- license-manager still uses for Google sign-in on this same shared Supabase
+-- project. This does NOT replace or alter the shared function, so
+-- license-manager's sign-in is untouched by helpdesk's move to SSO-only.
+-- Mirrors the shared function's hardened shape (2026-11-23, matching
+-- license-manager's post-2026-09-25 security fix — see its
+-- supabase/pending/78_critical_auth_hardening.sql): identity comes from the
+-- session (auth.uid()), never from caller-supplied parameters, which are
+-- kept only so the existing client call in src/lib/auth.js doesn't need to
+-- change, and are otherwise ignored.
+--
+-- Called on every sign-in (see src/lib/auth.js, which calls
+-- supabase.auth.signInWithSSO() rather than signInWithOAuth()). Same three
+-- cases as the shared function (already-linked / valid link-token / brand
+-- new — see schema.sql's resolve_profile() for the full case-by-case
+-- reasoning), plus one extra guard: refuses to run for a non-SSO auth
+-- session (auth.users.is_sso_user), so a stale password or OAuth sign-in
+-- can never create or link a helpdesk profile even while the Google
+-- provider stays enabled on the shared project for license-manager's sake.
+create or replace function helpdesk.resolve_profile_sso(
+  p_token uuid,
+  p_supabase_user_id uuid,
+  p_email text,
+  p_display_name text
+)
+returns uuid language plpgsql security definer set search_path = helpdesk, public as $$
+declare
+  v_uid uuid := auth.uid();
+  v_email text;
+  v_confirmed_at timestamptz;
+  v_display_name text;
+  v_is_sso boolean;
+  v_profile_id uuid;
+begin
+  if v_uid is null then raise exception 'not authenticated' using errcode = '28000'; end if;
+
+  select u.email, u.email_confirmed_at, u.is_sso_user,
+         coalesce(nullif(u.raw_user_meta_data->>'full_name', ''), nullif(u.raw_user_meta_data->>'name', ''), u.email)
+    into v_email, v_confirmed_at, v_is_sso, v_display_name
+  from auth.users u where u.id = v_uid;
+  if v_email is null then raise exception 'signed-in account has no email address'; end if;
+  if v_is_sso is not true then raise exception 'SSO sign-in required.'; end if;
+
+  -- case 1: already linked
+  select profile_id into v_profile_id
+  from public.linked_accounts where supabase_user_id = v_uid;
+  if v_profile_id is not null then
+    return v_profile_id;
+  end if;
+
+  -- case 2: valid link token — links this identity to the token's profile
+  -- regardless of email domain (the token itself is the proof). Locked so
+  -- two concurrent sign-ins can't both redeem the same token.
+  if p_token is not null then
+    select profile_id into v_profile_id
+    from public.profile_link_tokens
+    where token = p_token and used_at is null and expires_at > now()
+    for update;
+
+    if v_profile_id is not null then
+      insert into public.linked_accounts (supabase_user_id, profile_id, email)
+      values (v_uid, v_profile_id, v_email);
+      update public.profile_link_tokens set used_at = now() where token = p_token;
+      return v_profile_id;
+    end if;
+  end if;
+
+  -- case 3: new person, or first sign-in for a pre-created placeholder profile.
+  if not public.is_eligible_staff_email(v_email) then
+    raise exception 'Access restricted to SIL staff.';
+  end if;
+  if v_confirmed_at is null then
+    raise exception 'email address not confirmed';
+  end if;
+
+  select id into v_profile_id from public.profiles where lower(primary_email) = lower(v_email);
+  if v_profile_id is not null then
+    update public.profiles set display_name = v_display_name where id = v_profile_id;
+  else
+    insert into public.profiles (display_name, primary_email)
+    values (v_display_name, v_email)
+    returning id into v_profile_id;
+  end if;
+
+  insert into public.linked_accounts (supabase_user_id, profile_id, email)
+  values (v_uid, v_profile_id, v_email);
+
+  return v_profile_id;
+end;
+$$;
+
 -- Staff may work the ticket: agent of its current desk. Deleted tickets are
 -- visible only to desk admins / super admins (spec section 3).
 create or replace function helpdesk.can_work_ticket(p_ticket_id uuid) returns boolean
