@@ -20,10 +20,14 @@ function textOf(children) {
 
 export default function KbMarkdown({ body, imageUrls = {} }) {
   const components = {
-    h1: ({ children }) => <h2 id={headingId(textOf(children))} className="font-display text-2xl font-bold mt-8 mb-3 scroll-mt-6">{children}</h2>,
-    h2: ({ children }) => <h2 id={headingId(textOf(children))} className="font-display text-2xl font-bold mt-8 mb-3 scroll-mt-6">{children}</h2>,
-    h3: ({ children }) => <h3 id={headingId(textOf(children))} className="text-xl font-bold mt-6 mb-2 scroll-mt-6">{children}</h3>,
-    h4: ({ children }) => <h4 className="text-lg font-bold mt-5 mb-2">{children}</h4>,
+    // Four distinct levels, per the SIL branding doc's heading styles: H1
+    // (Playfair, SIL Light Blue), H2 (Source Sans, all-caps, SIL Orange, a
+    // section label rather than a big headline), H3 (Playfair italic bold,
+    // SIL Darker Blue), H4 (Source Sans italic semibold, black).
+    h1: ({ children }) => <h1 id={headingId(textOf(children))} className="font-display text-[28px] leading-tight font-semibold text-sil-light-blue mt-8 mb-3 scroll-mt-6">{children}</h1>,
+    h2: ({ children }) => <h2 id={headingId(textOf(children))} className="font-sans text-sm font-bold uppercase tracking-wider text-sil-orange border-b border-gray-200 pb-1.5 mt-8 mb-3 scroll-mt-6">{children}</h2>,
+    h3: ({ children }) => <h3 id={headingId(textOf(children))} className="font-display italic text-lg font-bold text-brand-dark mt-6 mb-2 scroll-mt-6">{children}</h3>,
+    h4: ({ children }) => <h4 className="font-sans italic text-base font-semibold text-gray-900 mt-5 mb-2">{children}</h4>,
     p: ({ children }) => <p className="my-3 leading-relaxed">{children}</p>,
     ul: ({ children }) => <ul className="list-disc pl-6 my-3 flex flex-col gap-1.5">{children}</ul>,
     ol: ({ children }) => <ol className="list-decimal pl-6 my-3 flex flex-col gap-1.5">{children}</ol>,

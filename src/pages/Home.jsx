@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { KeyRound } from 'lucide-react'
+import { useNavigate, Link } from 'react-router-dom'
+import { KeyRound, LifeBuoy } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { signInWithSSO } from '../lib/auth'
 
@@ -40,6 +40,14 @@ export default function Home() {
         <p className="mt-6 text-xs text-gray-400">
           Restricted to SIL staff.
         </p>
+
+        <Link
+          to="/help"
+          className="mt-4 flex items-center justify-center gap-1.5 text-sm font-semibold text-brand hover:underline"
+        >
+          <LifeBuoy size={15} />
+          Trouble signing in? Visit the Help Center
+        </Link>
       </div>
     </div>
   )

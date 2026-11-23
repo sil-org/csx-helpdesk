@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { signInWithSSO } from '../../lib/auth'
@@ -156,7 +156,13 @@ export default function HelpCenter() {
             </>
           )}
 
-          {ready && !q && topic && (
+          {ready && !q && topic && topicArticles?.length === 1 && (
+            // A single-article topic has nothing to browse, so skip the list
+            // and go straight to the article.
+            <Navigate to={articleLink(topicArticles[0])} replace />
+          )}
+
+          {ready && !q && topic && topicArticles?.length !== 1 && (
             <>
               <div className="text-sm"><Link to={deskLink(deskSlug, '', null)} className="text-brand font-semibold no-underline">Help center</Link> › {topic}</div>
               <h2 className="font-display text-[24px] m-0">{topic}</h2>
