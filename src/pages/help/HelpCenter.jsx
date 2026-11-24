@@ -6,6 +6,7 @@ import { signInWithSSO } from '../../lib/auth'
 import AppLayout from '../../components/AppLayout'
 import { getReporterLinks } from '../../navLinks'
 import ChatLauncher, { CHAT_URL } from '../../components/ChatLauncher'
+import ChippWidget from '../../components/ChippWidget'
 import {
   DEFAULT_COLOR, formatDate, isStale, listArticles, listRecent, loadKbDesks, loadTopics,
   searchKb, signInHint, snippetParts,
@@ -206,6 +207,7 @@ export default function HelpCenter() {
       </main>
 
       <ChatLauncher color={color} />
+      {!signedIn && <ChippWidget />}
     </AppLayout>
   )
 }

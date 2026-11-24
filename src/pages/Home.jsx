@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { KeyRound, LifeBuoy } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { signInWithSSO } from '../lib/auth'
+import ChippWidget from '../components/ChippWidget'
 
 export default function Home() {
   const { session, profile, loading } = useAuth()
@@ -49,6 +50,7 @@ export default function Home() {
           Trouble signing in? Visit the Help Center
         </Link>
       </div>
+      <ChippWidget />
     </div>
   )
 }

@@ -6,6 +6,7 @@ import AppLayout from '../../components/AppLayout'
 import { getReporterLinks } from '../../navLinks'
 import KbMarkdown from '../../components/KbMarkdown'
 import ChatLauncher from '../../components/ChatLauncher'
+import ChippWidget from '../../components/ChippWidget'
 import { HelpPanel } from './HelpCenter'
 import {
   DEFAULT_COLOR, formatDate, imagePathsIn, isStale, listArticles, loadArticle, loadKbDesks,
@@ -87,7 +88,7 @@ export default function Article() {
                 {article.topic && <> › <Link to={`/help?topic=${encodeURIComponent(article.topic)}`} className="text-brand font-semibold no-underline">{article.topic}</Link></>}
               </div>
               <div className="flex flex-col gap-2.5">
-                <h1 className="font-display text-[34px] leading-tight m-0 text-balance">{article.title}</h1>
+                <h1 className="font-display text-[34px] font-bold leading-tight text-brand m-0 text-balance">{article.title}</h1>
                 <div className="flex flex-wrap items-center gap-3 text-[13px] text-gray-500">
                   {article.drive_modified_at && <span>Updated {formatDate(article.drive_modified_at)}</span>}
                   {isStale(article.drive_modified_at) && <span className="font-bold rounded-full px-2 py-0.5 bg-[#FFF1D1] text-[#7A4F00]">May be out of date</span>}
@@ -123,6 +124,7 @@ export default function Article() {
       </div>
 
       <ChatLauncher color={color} />
+      {!signedIn && <ChippWidget />}
     </AppLayout>
   )
 }
